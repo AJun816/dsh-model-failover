@@ -58,11 +58,14 @@ model-failover:
 
 ## 开发与测试
 
+源码为 TypeScript（`src/index.ts`，类型引用官方 `@deepseek-ai/dsh-llm` 契约），`tsc` 编译产物 `lib/` 直接提交进仓库——DSH 从 GitHub 安装时无需任何构建步骤，发布物保持零构建依赖。
+
 ```bash
-node --import ./test/loader.mjs --test ./test/index.test.mjs
+pnpm build    # tsc 编译到 lib/
+pnpm test     # 编译 + 18 项测试（Node 内置 test runner + schemastery 测试桩）
 ```
 
-测试使用 Node 内置 test runner 与一个 schemastery 测试桩，零 devDependencies。
+运行时依赖仅 `@deepseek-ai/schemastery`；TypeScript 与官方类型包只在 devDependencies。
 
 ## Roadmap
 
