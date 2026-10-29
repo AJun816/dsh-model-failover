@@ -15,7 +15,20 @@
 
 ## 安装
 
-在 DSH 的插件管理器中安装 npm 包 dsh-model-failover。安装后把账号池配置写进 cordis.patch.yml（patch 层配置在 DSH 升级后保留）。
+在 DSH 的插件管理器（设置 → 插件 → 添加插件）中，输入以下任一安装源：
+
+| 安装源 | 输入内容 | 说明 |
+|---|---|---|
+| GitHub 仓库 | `https://github.com/AJun816/dsh-model-failover` | 无需发布 npm，立即可用（推荐） |
+| npm 包名 | `dsh-model-failover` | 需先发布到 npm（或镜像源同步后） |
+| 本地目录 | `D:\github\code\dsh-model-failover` | 开发调试用，必须是绝对路径 |
+
+安装说明：
+
+- 中国大陆用户可在安装引导中选择 npmmirror 镜像源，依赖（`@deepseek-ai/schemastery`）会从镜像拉取。
+- 通过 GitHub 安装的插件更新方式：先卸载再安装新版。
+- 安装后把账号池配置写进 `cordis.patch.yml`（patch 层配置在 DSH 升级后保留），并重启或重载插件。
+- 插件配置键为 `model-failover`（cordis 插件名），与包名 `dsh-model-failover` 略有不同，属正常现象。
 
 ## 快速开始
 

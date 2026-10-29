@@ -30,7 +30,15 @@ listener degrades gracefully: if the plugin itself fails, it passes through
 
 ## Install
 
-Install the npm package `dsh-model-failover` through the DSH plugin manager, then put your account pool into `cordis.patch.yml` (the patch layer survives DSH upgrades).
+In the DSH plugin manager (Settings → Plugins → Add plugin), enter any of these sources:
+
+| Source | Input | Notes |
+|---|---|---|
+| GitHub repo | `https://github.com/AJun816/dsh-model-failover` | works without an npm publish (recommended) |
+| npm package | `dsh-model-failover` | after it is published to npm |
+| Local directory | absolute path to this checkout | for development |
+
+Mainland-China users can pick the npmmirror registry in the install dialog. GitHub-installed plugins update by uninstall + reinstall. After installing, put your account pool into `cordis.patch.yml` (the patch layer survives DSH upgrades) and reload the plugin. The cordis config key is `model-failover` (the plugin name), which differs slightly from the package name — that is expected.
 
 ## Quick Start
 

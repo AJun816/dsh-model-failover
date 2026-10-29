@@ -11,6 +11,14 @@
   },
   "files": ["lib/index.js", "README.md", "LICENSE"],
   "keywords": ["deepseek-harness", "dsh", "failover", "llm", "glm", "quota"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AJun816/dsh-model-failover.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AJun816/dsh-model-failover/issues"
+  },
+  "homepage": "https://github.com/AJun816/dsh-model-failover#readme",
   "license": "MIT",
   "scripts": {
     "test": "node --import ./test/loader.mjs --test ./test/index.test.mjs"
