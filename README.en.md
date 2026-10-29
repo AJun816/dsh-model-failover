@@ -2,9 +2,9 @@
 
 > A DeepSeek Harness (DSH) plugin: automatic model & account failover across multiple providers. When one account's quota runs out, the next one takes over — the task never stops. Zero runtime dependencies.
 
-**Status**: Design finalized, implementation in progress. Full design in [DESIGN.md](DESIGN.md) (Chinese).
+**Status**: M1 implemented, 11 automated tests passing. Full design in [DESIGN.md](DESIGN.md) (Chinese).
 
-## Key Features (planned)
+## Key Features (implemented, M1)
 
 - ✅ Feasibility verified against DSH source: built entirely on the `agent/request` + `agent/request-error` waterfalls — an in-process "fail → switch account → retry" loop with no external proxy
 - Multi-provider (DeepSeek, GLM, any OpenAI-compatible endpoint) and multi-account per provider (e.g. GLM ×3)
@@ -28,7 +28,11 @@ The only DSH extension points used are the two public waterfall events plus
 listener degrades gracefully: if the plugin itself fails, it passes through
 `next()` and DSH behaves exactly as if the plugin were not installed.
 
-## Quick Start (available after M1)
+## Install
+
+Install the npm package `dsh-model-failover` through the DSH plugin manager, then put your account pool into `cordis.patch.yml` (the patch layer survives DSH upgrades).
+
+## Quick Start
 
 ```yaml
 # cordis.patch.yml
