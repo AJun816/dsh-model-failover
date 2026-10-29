@@ -37,8 +37,11 @@ model-failover:
 - `entries` 数组顺序即替补顺序；条目里的 `provider` 是 DSH 中已注册的 provider 名（例如为 GLM 三个账号各自配置的 provider 条目），`model` 是该 provider 下的模型 id。
 - `activeGroup` 激活后，每次模型调用的路由由本插件接管：按顺序选第一个健康条目。
 - 触发切换的错误分类（`retryOn`）：`quota`（402/余额不足/QUOTA/ACCOUNT_QUOTA）、`rate-limit`（429）、`auth`（401/403）、`network`。其他错误（如上下文超长）不换号，保持 DSH 原生行为。
-- 某条目失败后进入冷却（默认 30 分钟，到期自动恢复）；冷却是账号级、跨会话共享的。所有条目都在冷却时不再干预，交回 DSH 默认错误处理。
-- 与内置 llm-retry 插件兼容：两者都挂在 agent/request-error 瀑布上，本插件只对配置的分类返回 retry，其余透传。
+- 某账号失败后进入账号级冷却（默认 30 分钟，到期自动恢复；若供应商返回更长的 Retry-After 则按更长者）；冷却是账号级（同账号所有模型联动）、跨会话共享的。所有账号都在冷却时不再干预，交回 DSH 默认错误处理。
+- 与内置 llm-retry 插件协同：本插件的 request-error 监听以 prepend 注册、总是先冷却账号再委托下游，因此 llm-retry 的退避/延迟决策完整保留；仅当下游无恢复决策且存在健康替补时才由本插件返回 retry。
+- 同一 turn/step 内的重试次数以组大小为上限（每个账号最多一次机会），杜绝重试风暴。
+- 供应商宕机/过载（503/504/529）按 network 分类处理；跨供应商切换时仅保留 maxTokens/temperature 等中立字段，避免用 A 家凭证调 B 家。
+- 配置变更由 DSH 插件生命周期自动重载（cordis 重新调用 apply，监听器随旧 fiber 一并销毁重建）。
 
 ## 开发与测试
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-failover",
-  "description": "DeepSeek Harness plugin: automatic model & account failover across providers when quota runs out — zero runtime dependencies",
+  "description": "DeepSeek Harness plugin: automatic model & account failover across providers when quota runs out — near-zero dependencies",
   "version": "0.1.0",
   "publishConfig": { "access": "public" },
   "type": "module",
@@ -12,8 +12,11 @@
   "files": ["lib/index.js", "README.md", "LICENSE"],
   "keywords": ["deepseek-harness", "dsh", "failover", "llm", "glm", "quota"],
   "license": "MIT",
+  "scripts": {
+    "test": "node --import ./test/loader.mjs --test ./test/index.test.mjs"
+  },
   "dependencies": {
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/schemastery": ">=3.18.0 <4"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=0.2.0"

@@ -115,7 +115,7 @@ test('all entries cooling → pass through untouched and surface default error h
   const ctx = fakeCtx()
   const { pool } = apply(ctx, config)
   const agent = { id: 'a1' }
-  for (const entry of config.groups[0].entries) pool.cool(entry.provider + '/' + entry.model)
+  for (const entry of config.groups[0].entries) pool.cool(entry.provider)
 
   const out = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
   assert.deepEqual({ provider: out.provider, model: out.model }, { provider: 'seed', model: 'seed-model' })
@@ -126,7 +126,7 @@ test('all entries cooling → pass through untouched and surface default error h
     () => 'default-error',
   )
   assert.equal(action, 'default-error')
-  assert.ok(ctx.log.warn.some((line) => line.includes('every entry is cooling')))
+  assert.ok(ctx.log.warn.some((line) => line.includes('every account is cooling')))
 })
 
 test('cascades through the whole pool one failure at a time', async () => {
@@ -150,7 +150,7 @@ test('cascades through the whole pool one failure at a time', async () => {
 
 test('separate agents track in-flight entries independently', async () => {
   const ctx = fakeCtx()
-  apply(ctx, config)
+  const { pool } = apply(ctx, config)
   const a1 = { id: 'a1' }
   const a2 = { id: 'a2' }
   await ctx.waterfall('agent/request', { agent: a1 }, () => seedConfig)
@@ -161,7 +161,113 @@ test('separate agents track in-flight entries independently', async () => {
   assert.equal(r2.provider, 'glm-2', 'a2 skips the account a1 exhausted')
   const r1 = await ctx.waterfall('agent/request', { agent: a1 }, () => seedConfig)
   assert.equal(r1.provider, 'glm-2')
-  assert.notEqual(r1, r2, 'in-flight entries still tracked per agent')
+  assert.deepEqual(Object.keys(pool.snapshot()), ['glm-1'], 'only the failed account is cooling')
+})
+
+test('untracked failure still cools the reported provider and retries', async () => {
+  const ctx = fakeCtx()
+  const { pool } = apply(ctx, config)
+  // No prior agent/request: in-flight is unknown; the loop-reported provider wins.
+  const action = await ctx.waterfall(
+    'agent/request-error',
+    { agent: { id: 'x' }, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    () => undefined,
+  )
+  assert.deepEqual(action, { kind: 'retry' })
+  assert.ok(pool.isCooling('glm-1'))
+  const route = await ctx.waterfall('agent/request', { agent: { id: 'x' }, turn: 1, step: 1 }, () => seedConfig)
+  assert.equal(route.provider, 'glm-2')
+})
+
+test('untrackable failure without provider info passes through (no blind retry)', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const action = await ctx.waterfall(
+    'agent/request-error',
+    { failure: { code: 'QUOTA' } }, // no agent, no provider
+    () => 'default',
+  )
+  assert.equal(action, 'default')
+})
+
+test('retry budget bounds one step to one pass over the pool', async () => {
+  const ctx = fakeCtx()
+  const { pool } = apply(ctx, config)
+  const agent = { id: 'a1' }
+  for (let i = 0; i < 4; i += 1) {
+    // each iteration: fail the currently selected account, same turn/step
+    await ctx.waterfall('agent/request-error',
+      { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
+      () => 'default')
+    pool.recover('glm-1'); pool.recover('glm-2'); pool.recover('glm-3') // keep entries selectable
+  }
+  // 4th failure (used=4 > 3 entries) must stop returning retry
+  const last = await ctx.waterfall('agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    () => 'default')
+  assert.equal(last, 'default')
+  assert.ok(ctx.log.warn.some((l) => l.includes('retry budget exhausted')))
+})
+
+test('provider Retry-After longer than cooldown is honored and never shortened', () => {
+  let clock = 0
+  const pool = createPool({ cooldownMs: 60_000, now: () => clock })
+  pool.cool('glm-1', Math.max(60_000, 600_000))
+  clock = 300_000
+  assert.equal(pool.isCooling('glm-1'), true, 'still cooling at 5min of a 10min Retry-After')
+  clock = 600_000
+  assert.equal(pool.isCooling('glm-1'), false)
+  // A later, shorter re-cool starts from its own expiry check (monotonic clock).
+  pool.cool('glm-1', 120_000) // at clock=600_000 → until 720_000
+  clock = 700_000
+  assert.equal(pool.isCooling('glm-1'), true)
+  clock = 720_000
+  assert.equal(pool.isCooling('glm-1'), false, 'short re-cool expires on schedule')
+})
+
+test('503/529 provider outage classifies as network and triggers switch', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const agent = { id: 'a1' }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  assert.equal(classifyFailure({ code: 'WEIRD', status: 503 }), 'network')
+  assert.equal(classifyFailure({ code: 'WEIRD', status: 529 }), 'network')
+  const action = await ctx.waterfall('agent/request-error',
+    { agent, turn: 1, step: 1, failure: { code: 'WEIRD', status: 503 } }, () => undefined)
+  assert.deepEqual(action, { kind: 'retry' })
+})
+
+test('same provider different models: account-level cooling links them', async () => {
+  const cfg = {
+    groups: [{ id: 'g', entries: [
+      { provider: 'glm-1', model: 'glm-4.7' },
+      { provider: 'glm-1', model: 'glm-4.6' },
+      { provider: 'glm-2', model: 'glm-4.7' },
+    ] }],
+    activeGroup: 'g', cooldownMinutes: 30, retryOn: ['quota'],
+  }
+  const ctx = fakeCtx()
+  apply(ctx, cfg)
+  const agent = { id: 'a1' }
+  let route = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  assert.equal(route.model, 'glm-4.7')
+  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, failure: { code: 'QUOTA' } }, () => undefined)
+  route = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  assert.equal(route.provider, 'glm-2', 'exhausted account is skipped entirely, not just one model')
+})
+
+test('cross-provider switch drops provider-specific fields, keeps neutral ones', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const route = await ctx.waterfall('agent/request',
+    { agent: { id: 'a' }, turn: 1, step: 1 },
+    () => ({ provider: 'deepseek', model: 'deepseek-chat', apiKey: 'sk-a', baseURL: 'https://a', temperature: 0.3, maxTokens: 4096 }))
+  assert.equal(route.provider, 'glm-1')
+  assert.equal(route.model, 'glm-4.7')
+  assert.equal(route.apiKey, undefined)
+  assert.equal(route.baseURL, undefined)
+  assert.equal(route.temperature, 0.3)
+  assert.equal(route.maxTokens, 4096)
 })
 
 test('inactive without groups: registers nothing, still safe', async () => {
