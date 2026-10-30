@@ -30,7 +30,7 @@ import type { LlmCallConfig, LlmFailure } from '@deepseek-ai/dsh-llm'
 export type RequestErrorAction = { kind: 'retry' } | undefined
 
 export const name = 'model-failover'
-export const inject = []
+export const inject = ['llm']
 
 /** One fallback-hop: a provider (account) route plus the model to call on it. */
 export interface FailoverEntry {
@@ -46,10 +46,13 @@ export interface FailoverGroup {
 
 /** Plugin configuration; lives in the user's cordis.patch.yml patch layer. */
 export interface Config {
+  /** Explicit fallback groups; when empty, the auto chain follows the configured model catalog. */
   groups?: FailoverGroup[]
   activeGroup?: string
   cooldownMinutes?: number
   retryOn?: string[]
+  /** When true (default) and no groups are configured, every configured provider auto-joins the chain. */
+  autoDiscover?: boolean
 }
 
 /**
@@ -66,6 +69,7 @@ export const Config: z<Config> = z.object({
   activeGroup: z.string().default('').volatile(),
   cooldownMinutes: z.number().default(30).volatile(),
   retryOn: z.array(z.string()).default(['quota', 'rate-limit', 'auth', 'network']).volatile(),
+  autoDiscover: z.boolean().default(true).volatile(),
 }) as unknown as z<Config>
 
 /** Failure classes that can trigger a switchover. */
@@ -198,6 +202,11 @@ interface ListenerContext {
   on(event: string, listener: (payload: any, next: () => Promise<any>) => Promise<any>, options?: { prepend?: boolean }): () => void
   /** cordis effect: re-runs the factory when volatile config it reads changes. */
   effect?: (factory: () => () => void, label?: string) => void
+  /** The live LLM registry (declared via inject); drives auto-discovery. */
+  llm?: {
+    listProviders(): readonly { id: string, name?: string }[]
+    listModels(provider: string): Promise<readonly { id: string, name?: string }[]>
+  }
   logger?: {
     info?: (format: string, ...args: unknown[]) => void
     warn?: (format: string, ...args: unknown[]) => void
@@ -241,14 +250,45 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
   }
 
   /**
+   * Auto-discovered chain: one entry per configured provider (its first
+   * model), in registry order. Built from the public llm service; refreshed
+   * on adapter topology changes. Empty while the registry is unavailable.
+   */
+  let autoEntries: FailoverEntry[] = []
+  const llm = (ctx as ListenerContext).llm
+  const refreshAuto = async (): Promise<void> => {
+    if (llm === undefined) return
+    try {
+      const entries: FailoverEntry[] = []
+      for (const provider of llm.listProviders()) {
+        try {
+          const models = await llm.listModels(provider.id)
+          const first = models[0]
+          if (first !== undefined) entries.push({ provider: provider.id, model: first.id })
+        } catch { /* a provider whose catalog fails is skipped this round */ }
+      }
+      autoEntries = entries
+    } catch (error) {
+      ;(ctx as ListenerContext).logger?.warn?.('model-failover: auto-discovery failed: %o', error)
+    }
+  }
+  void refreshAuto()
+  ;(ctx as ListenerContext).on('llm/adapters-updated', (() => { void refreshAuto() }) as never)
+
+  /**
    * Wire the listeners from the current (volatile) config. Re-run by cordis
    * whenever a volatile field changes, so GUI edits apply without a restart;
    * the pool's cooling state deliberately survives re-wiring.
    */
   const wire = (): (() => void) => {
-    const group = activeGroupOf(config)
     const cooldownMs = finiteOr(config.cooldownMinutes, 30) * 60_000
     const retryOn = new Set(Array.isArray(config.retryOn) ? config.retryOn : ['quota', 'rate-limit', 'auth', 'network'])
+    const autoOn = config.autoDiscover !== false
+
+    let group: FailoverGroup | undefined = activeGroupOf(config)
+    if ((config.groups ?? []).length === 0 && autoOn) {
+      group = { id: 'auto', entries: autoEntries }
+    }
 
     if (group === undefined || group.entries.length === 0) {
       ;(ctx as ListenerContext).logger?.info?.('model-failover: no groups or entries configured — plugin stays inactive (pass-through)')

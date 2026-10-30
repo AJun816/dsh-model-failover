@@ -29,7 +29,7 @@ export type RequestErrorAction = {
     kind: 'retry';
 } | undefined;
 export declare const name = "model-failover";
-export declare const inject: never[];
+export declare const inject: string[];
 /** One fallback-hop: a provider (account) route plus the model to call on it. */
 export interface FailoverEntry {
     provider: string;
@@ -42,10 +42,13 @@ export interface FailoverGroup {
 }
 /** Plugin configuration; lives in the user's cordis.patch.yml patch layer. */
 export interface Config {
+    /** Explicit fallback groups; when empty, the auto chain follows the configured model catalog. */
     groups?: FailoverGroup[];
     activeGroup?: string;
     cooldownMinutes?: number;
     retryOn?: string[];
+    /** When true (default) and no groups are configured, every configured provider auto-joins the chain. */
+    autoDiscover?: boolean;
 }
 /**
  * Runtime schema for {@link Config}.
@@ -93,6 +96,17 @@ interface ListenerContext {
     }): () => void;
     /** cordis effect: re-runs the factory when volatile config it reads changes. */
     effect?: (factory: () => () => void, label?: string) => void;
+    /** The live LLM registry (declared via inject); drives auto-discovery. */
+    llm?: {
+        listProviders(): readonly {
+            id: string;
+            name?: string;
+        }[];
+        listModels(provider: string): Promise<readonly {
+            id: string;
+            name?: string;
+        }[]>;
+    };
     logger?: {
         info?: (format: string, ...args: unknown[]) => void;
         warn?: (format: string, ...args: unknown[]) => void;
