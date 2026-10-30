@@ -1,0 +1,7 @@
+# Explicitly installed bundle: dsh-model-failover. The Host row activates the
+# dual-waterfall failover listeners; the client row (dsh.client in package.json)
+# adds the Plugins-page settings card.
+
+- insert:
+    - id: model-failover
+      name: dsh-model-failover

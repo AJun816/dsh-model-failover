@@ -23,9 +23,12 @@
         "@deepseek-ai/dsh-client-ui-plugin-manager"
       ],
       "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
     }
   },
-  "files": ["lib/index.js", "lib/index.d.ts", "lib/client.js", "README.md", "LICENSE"],
+  "files": ["lib/index.js", "lib/index.d.ts", "lib/client.js", "cordis.patch.yml", "README.md", "LICENSE"],
   "keywords": ["deepseek-harness", "dsh", "failover", "llm", "glm", "quota"],
   "repository": {
     "type": "git",
