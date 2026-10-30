@@ -1,7 +1,7 @@
 {
   "name": "dsh-model-failover",
   "description": "DeepSeek Harness plugin: automatic model & account failover across providers when quota runs out — near-zero dependencies",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publishConfig": { "access": "public" },
   "type": "module",
   "main": "lib/index.js",
@@ -11,9 +11,21 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
-  "files": ["lib/index.js", "lib/index.d.ts", "README.md", "LICENSE"],
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": ["lib/index.js", "lib/index.d.ts", "lib/client.js", "README.md", "LICENSE"],
   "keywords": ["deepseek-harness", "dsh", "failover", "llm", "glm", "quota"],
   "repository": {
     "type": "git",
@@ -25,9 +37,9 @@
   "homepage": "https://github.com/AJun816/dsh-model-failover#readme",
   "license": "MIT",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node ./node_modules/esbuild/bin/esbuild src/client.tsx --bundle --format=esm --platform=browser --jsx=automatic --outfile=lib/client.js --external:react --external:react/jsx-runtime --external:react-dom --external:react-dom/client --external:@deepseek-ai/cordis --external:@deepseek-ai/dsh-client-ui-slots",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && node --import ./test/loader.mjs --test ./test/index.test.mjs"
+    "test": "node --import ./test/loader.mjs --test ./test/index.test.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": ">=3.18.0 <4"
@@ -40,6 +52,7 @@
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
     "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   }
 }

@@ -29,7 +29,7 @@
 - 大陆网络推荐 SSH 形式（`git@github.com:...`）：安装预检与克隆都走 SSH 密钥，不依赖代理。HTTPS 形式在直连被墙且无代理时会超时失败。
 - 中国大陆用户可在安装引导中选择 npmmirror 镜像源，依赖（`@deepseek-ai/schemastery`）会从镜像拉取。
 - 通过 GitHub 安装的插件更新方式：先卸载再安装新版。
-- 本插件没有独立设置界面（M1 无 GUI）：配置在 `cordis.patch.yml`，运行状态看 DSH 日志中 `model-failover:` 前缀的行。
+- **v0.3.0 起带 GUI**：设置 → 插件 页面出现 "Model Failover 模型替补" 卡片，可直接编辑替补分组/条目顺序/冷却时长/触发类别，保存即时生效；也可继续手改 `cordis.patch.yml`。运行状态看 DSH 日志中 `model-failover:` 前缀的行。
 - 安装后把账号池配置写进 `cordis.patch.yml`（patch 层配置在 DSH 升级后保留），并重启或重载插件。
 - 插件配置键为 `model-failover`（cordis 插件名），与包名 `dsh-model-failover` 略有不同，属正常现象。
 
@@ -73,8 +73,9 @@ pnpm test     # 编译 + 18 项测试（Node 内置 test runner + schemastery �
 ## Roadmap
 
 - [x] M1：Config 账号池 + 双瀑布监听 + 错误分类 + 冷却状态机 + 日志 + 测试
+- [x] M3（v0.3.0）：设置 → 插件 页 GUI 卡片（分组/条目编辑、拖动排序按钮、冷却与触发类别设置，保存即时生效，走通用 settings RPC，无需自定义 Host API）
+- [ ] M3+：GUI 内展示各账号实时冷却状态（需自定义 Remote 服务）
 - [ ] M2：llm.registerConfigurableProviders 注册 glm-1/2/3 条目，设置页可发现；agentDefaultModel 联动
-- [ ] M3（可选）：Web UI 管理替补顺序与账号健康状态
 - [ ] M4（可选）：用量统计与额度预警
 
 ## License
