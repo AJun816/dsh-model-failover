@@ -2,7 +2,9 @@
   "name": "dsh-model-failover",
   "description": "DeepSeek Harness plugin: automatic model & account failover across providers when quota runs out — near-zero dependencies",
   "version": "0.3.1",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -36,8 +38,22 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "files": ["lib/index.js", "lib/index.d.ts", "lib/client.js", "cordis.patch.yml", "README.md", "LICENSE"],
-  "keywords": ["deepseek-harness", "dsh", "failover", "llm", "glm", "quota"],
+  "files": [
+    "lib/index.js",
+    "lib/index.d.ts",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "failover",
+    "llm",
+    "glm",
+    "quota"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AJun816/dsh-model-failover.git"
@@ -64,6 +80,7 @@
     "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
+    "react": "^18.0.0",
     "typescript": "^7.0.2"
   }
 }
