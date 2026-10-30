@@ -19,14 +19,17 @@
 
 | 安装源 | 输入内容 | 说明 |
 |---|---|---|
-| GitHub 仓库 | `https://github.com/AJun816/dsh-model-failover` | 无需发布 npm，立即可用（推荐） |
+| GitHub SSH（推荐） | `git@github.com:AJun816/dsh-model-failover.git` | 走 SSH 免密，大陆网络无代理也稳定 |
+| GitHub HTTPS | `https://github.com/AJun816/dsh-model-failover` | 需网络能直连 GitHub（或系统代理开启） |
 | npm 包名 | `dsh-model-failover` | 需先发布到 npm（或镜像源同步后） |
 | 本地目录 | `D:\github\code\dsh-model-failover` | 开发调试用，必须是绝对路径 |
 
 安装说明：
 
+- 大陆网络推荐 SSH 形式（`git@github.com:...`）：安装预检与克隆都走 SSH 密钥，不依赖代理。HTTPS 形式在直连被墙且无代理时会超时失败。
 - 中国大陆用户可在安装引导中选择 npmmirror 镜像源，依赖（`@deepseek-ai/schemastery`）会从镜像拉取。
 - 通过 GitHub 安装的插件更新方式：先卸载再安装新版。
+- 本插件没有独立设置界面（M1 无 GUI）：配置在 `cordis.patch.yml`，运行状态看 DSH 日志中 `model-failover:` 前缀的行。
 - 安装后把账号池配置写进 `cordis.patch.yml`（patch 层配置在 DSH 升级后保留），并重启或重载插件。
 - 插件配置键为 `model-failover`（cordis 插件名），与包名 `dsh-model-failover` 略有不同，属正常现象。
 
