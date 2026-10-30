@@ -195,7 +195,7 @@ interface RemoteFace {
 }
 
 /** Browser plugin body. */
-export const inject = ['slots', 'remote']
+export const inject = ['slots', 'remote', 'remote.settings']
 
 export function apply(ctx: { slots: SlotsFace, remote: RemoteFace, effect?: (fn: () => () => void, label?: string) => void }): void {
   const register = (): (() => void) => ctx.slots.inject('plugins.item', () => ctx.slots.register({
