@@ -62,11 +62,11 @@ export const Config: z<Config> = z.object({
       provider: z.string().required(),
       model: z.string().required(),
     })).required(),
-  })).default([]),
-  activeGroup: z.string().default(''),
-  cooldownMinutes: z.number().default(30),
-  retryOn: z.array(z.string()).default(['quota', 'rate-limit', 'auth', 'network']),
-})
+  })).default([]).volatile(),
+  activeGroup: z.string().default('').volatile(),
+  cooldownMinutes: z.number().default(30).volatile(),
+  retryOn: z.array(z.string()).default(['quota', 'rate-limit', 'auth', 'network']).volatile(),
+}) as unknown as z<Config>
 
 /** Failure classes that can trigger a switchover. */
 export const FAILURE_CLASSES = ['quota', 'rate-limit', 'auth', 'network', 'other'] as const
@@ -196,6 +196,8 @@ function reroute(resolved: LlmCallConfig, selected: FailoverEntry): LlmCallConfi
 /** The slice of cordis Context this plugin touches; keeps coupling minimal. */
 interface ListenerContext {
   on(event: string, listener: (payload: any, next: () => Promise<any>) => Promise<any>, options?: { prepend?: boolean }): () => void
+  /** cordis effect: re-runs the factory when volatile config it reads changes. */
+  effect?: (factory: () => () => void, label?: string) => void
   logger?: {
     info?: (format: string, ...args: unknown[]) => void
     warn?: (format: string, ...args: unknown[]) => void
@@ -225,16 +227,7 @@ interface WaterfallPayload {
  */
 export function apply(ctx: ListenerContext, config: Config = {}, internals: ApplyInternals = {}): { pool: AccountPool } {
   const now = internals.now ?? (() => Date.now())
-  const cooldownMs = finiteOr(config.cooldownMinutes, 30) * 60_000
-  const retryOn = new Set(Array.isArray(config.retryOn) ? config.retryOn : ['quota', 'rate-limit', 'auth', 'network'])
-  const pool = internals.pool ?? createPool({ cooldownMs, now })
-  const group = activeGroupOf(config)
-
-  if (group === undefined || group.entries.length === 0) {
-    ;(ctx as ListenerContext).logger?.info?.('model-failover: no groups or entries configured — plugin stays inactive (pass-through)')
-    return { pool }
-  }
-  ;(ctx as ListenerContext).logger?.info?.(`model-failover: active group "${group.id}" with ${group.entries.length} entries (${group.entries.map((e) => e.provider + '/' + e.model).join(' → ')})`)
+  const pool = internals.pool ?? createPool({ cooldownMs: 30 * 60_000, now })
 
   /** Which entry the current in-flight request uses, per agent key. */
   const inFlight = new Map<string, FailoverEntry>()
@@ -247,7 +240,23 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     return raw === undefined || raw === null ? undefined : String(raw)
   }
 
-  ;(ctx as ListenerContext).on('agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
+  /**
+   * Wire the listeners from the current (volatile) config. Re-run by cordis
+   * whenever a volatile field changes, so GUI edits apply without a restart;
+   * the pool's cooling state deliberately survives re-wiring.
+   */
+  const wire = (): (() => void) => {
+    const group = activeGroupOf(config)
+    const cooldownMs = finiteOr(config.cooldownMinutes, 30) * 60_000
+    const retryOn = new Set(Array.isArray(config.retryOn) ? config.retryOn : ['quota', 'rate-limit', 'auth', 'network'])
+
+    if (group === undefined || group.entries.length === 0) {
+      ;(ctx as ListenerContext).logger?.info?.('model-failover: no groups or entries configured — plugin stays inactive (pass-through)')
+      return () => {}
+    }
+    ;(ctx as ListenerContext).logger?.info?.(`model-failover: active group "${group.id}" with ${group.entries.length} entries (${group.entries.map((e) => e.provider + '/' + e.model).join(' → ')})`)
+
+    const offRequest = (ctx as ListenerContext).on('agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
     try {
       const resolved = await next()
       const selected = firstHealthyEntry(group.entries, pool)
@@ -264,10 +273,10 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     }
   })
 
-  // Prepend so this listener always runs before same-waterfall recovery
-  // policies (e.g. llm-retry): the account is cooled no matter who decides
-  // the retry, and downstream backoff is preserved by always delegating.
-  ;(ctx as ListenerContext).on('agent/request-error', async (payload: WaterfallPayload, next: () => Promise<RequestErrorAction | undefined>) => {
+    // Prepend so this listener always runs before same-waterfall recovery
+    // policies (e.g. llm-retry): the account is cooled no matter who decides
+    // the retry, and downstream backoff is preserved by always delegating.
+    const offRequestError = (ctx as ListenerContext).on('agent/request-error', async (payload: WaterfallPayload, next: () => Promise<RequestErrorAction | undefined>) => {
     try {
       const key = agentKey(payload)
       const failure = payload?.failure
@@ -351,7 +360,18 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
       ;(ctx as ListenerContext).logger?.warn?.('model-failover: agent/request-error listener failed, passing through: %o', error)
       return next()
     }
-  }, { prepend: true })
+    }, { prepend: true })
 
+    return () => {
+      offRequest()
+      offRequestError()
+    }
+  }
+
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(wire, 'model-failover: volatile config wiring')
+  } else {
+    wire()
+  }
   return { pool }
 }

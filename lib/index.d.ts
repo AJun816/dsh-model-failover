@@ -91,6 +91,8 @@ interface ListenerContext {
     on(event: string, listener: (payload: any, next: () => Promise<any>) => Promise<any>, options?: {
         prepend?: boolean;
     }): () => void;
+    /** cordis effect: re-runs the factory when volatile config it reads changes. */
+    effect?: (factory: () => () => void, label?: string) => void;
     logger?: {
         info?: (format: string, ...args: unknown[]) => void;
         warn?: (format: string, ...args: unknown[]) => void;

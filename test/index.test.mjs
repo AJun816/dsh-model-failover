@@ -19,7 +19,7 @@ function fakeCtx() {
       listeners.get(event).push(listener)
       return () => listeners.get(event)?.splice(listeners.get(event).indexOf(listener), 1)
     },
-    effect() { return () => {} },
+    effect(factory) { const dispose = factory(); return () => dispose?.() },
   }
   ctx.waterfall = async (event, payload, seed) => {
     const chain = [...(listeners.get(event) ?? [])]
