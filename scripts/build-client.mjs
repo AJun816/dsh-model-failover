@@ -11,7 +11,7 @@ await build({
   platform: 'browser',
   jsx: 'automatic',
   outfile: 'lib/client.js',
-  external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-ui-slots'],
+  external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives'],
   banner: { js: banner },
   footer: { js: footer },
   logLevel: 'info',
