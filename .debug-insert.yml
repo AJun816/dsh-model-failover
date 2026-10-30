@@ -1,0 +1,3 @@
+- insert:
+    - id: model-failover
+      name: dsh-model-failover
