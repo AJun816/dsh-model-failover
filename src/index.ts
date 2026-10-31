@@ -291,13 +291,11 @@ const SWITCH_RECORD_TYPE = 'plugin:model-failover/switch'
 /** The official `appendPluginRecord(session, type, data)` writer from the host. */
 type PluginRecordWriter = (session: unknown, type: string, data: unknown) => unknown
 
-/** Lazily resolved and cached: the writer once found, undefined when unavailable. */
+/** Cached once resolved; a failed lookup retries on the next switch (rare). */
 let pluginRecordWriter: PluginRecordWriter | undefined
-let pluginRecordWriterResolved = false
 
 async function resolvePluginRecordWriter(): Promise<PluginRecordWriter | undefined> {
-  if (pluginRecordWriterResolved) return pluginRecordWriter
-  pluginRecordWriterResolved = true
+  if (pluginRecordWriter !== undefined) return pluginRecordWriter
   try {
     // Runtime lookup of the in-process host module (the same modules sibling
     // plugins like dsh-web-search-zhipu import statically). The computed
@@ -306,7 +304,7 @@ async function resolvePluginRecordWriter(): Promise<PluginRecordWriter | undefin
     const specifier = '@deepseek-ai/dsh-session'
     const mod = await import(specifier) as { appendPluginRecord?: PluginRecordWriter }
     if (typeof mod.appendPluginRecord === 'function') pluginRecordWriter = mod.appendPluginRecord
-  } catch { /* best effort */ }
+  } catch { /* best effort: retry on the next switch */ }
   return pluginRecordWriter
 }
 
@@ -430,7 +428,10 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
   const logFile = internals.logFile
   /** Record a switch through all channels without blocking the retry decision. */
   const note = (payload: WaterfallPayload, from: string, to: string, reason: string, via: SwitchRecord['via']): void => {
-    void recordSwitch(ctx, payload as Parameters<typeof recordSwitch>[1], { at: now(), from, to, reason, via }, logFile)
+    // Recording is advisory: swallow even programming errors so no switch can
+    // ever surface as an unhandled rejection inside the host process.
+    recordSwitch(ctx, payload as Parameters<typeof recordSwitch>[1], { at: now(), from, to, reason, via }, logFile)
+      .catch(() => { /* every channel already degraded on its own */ })
   }
   const pool = internals.pool ?? createPool({ cooldownMs: 30 * 60_000, now })
 
@@ -512,6 +513,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     // ours to swallow. Only OUR routing below degrades to pass-through.
     const resolved = await next()
     try {
+      if (resolved === null || typeof resolved !== 'object') return resolved // nothing sane to reroute
       const selected = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
       const key = agentKey(payload)
       if (selected === undefined || key === undefined) {
@@ -564,7 +566,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
       }
       const retryAfter = Math.max(
         finiteOr(failure?.providerRetryAfterMs, 0),
-        retryAfterFromMessage(String((failure as { message?: string } | undefined)?.message ?? ''), now()),
+        retryAfterFromMessage((failure as { message?: string } | null | undefined)?.message, now()),
       )
       pool.cool(failed.provider, Math.max(cooldownMs, retryAfter))
 

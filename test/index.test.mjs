@@ -409,3 +409,31 @@ test('switch records land in the plugin log and session event', async () => {
   assert.equal(sessionEvent[1].to, 'glm-2')
   fs.rmSync(logFile, { force: true })
 })
+
+test('a switch never rejects even when every record channel fails', async () => {
+  const ctx = fakeCtx()
+  // channel 1: the dsh-session stub forwards to session.append, which throws;
+  // channel 2: log path under a nonexistent root; channel 3: ctx has no settings.
+  const agent = { id: 'a1', session: { append: () => { throw new Error('session channel boom') } } }
+  apply(ctx, config, { logFile: '/nonexistent-root-dir/x/switches.log', now: () => 1_000 })
+  const action = await ctx.waterfall('agent/request-error',
+    { agent, turn: 9, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    () => 'default')
+  assert.deepEqual(action, { kind: 'retry' }) // the failover decision itself is unaffected
+  // An unhandled rejection from the fire-and-forget recording would fail the
+  // test runner; settling here proves every channel degraded quietly.
+  await new Promise((r) => setTimeout(r, 60))
+  assert.ok(true)
+})
+
+test('garbage payloads never throw into the waterfalls', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const r1 = await ctx.waterfall('agent/request-error', {}, () => 'default')
+  assert.equal(r1, 'default')
+  const r2 = await ctx.waterfall('agent/request-error', undefined, () => 'default2')
+  assert.equal(r2, 'default2')
+  // A downstream listener returning a non-object config passes through untouched.
+  const r3 = await ctx.waterfall('agent/request', { agent: { id: 'x' }, turn: 1, step: 1 }, () => null)
+  assert.equal(r3, null)
+})
