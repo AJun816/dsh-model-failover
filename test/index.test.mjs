@@ -410,6 +410,17 @@ test('switch records land in the plugin log and session event', async () => {
   fs.rmSync(logFile, { force: true })
 })
 
+test('compiled output never writes required session events directly', () => {
+  // The v0.8.0 bug class: calling the plain required-event append channel with
+  // a custom type writes a log the persistence reader refuses to load. This
+  // guard fails the build if anyone ever reintroduces that call pattern.
+  const lib = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.equal((lib.match(/session\s*\.\s*append\s*\(/g) ?? []).length, 0,
+    'session records must only be written through appendPluginRecord')
+  assert.ok(lib.includes("SWITCH_RECORD_TYPE = 'plugin:model-failover/switch'"),
+    'the record type must follow the plugin: grammar')
+})
+
 test('a switch never rejects even when every record channel fails', async () => {
   const ctx = fakeCtx()
   // channel 1: the dsh-session stub forwards to session.append, which throws;

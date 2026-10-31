@@ -39,6 +39,7 @@
 - 插件只依赖 DSH 的公开插件契约：`agent/request` / `agent/request-error` 瀑布、`ctx.effect`、`ctx.logger`、`llm` 服务、`settings`/`credentials` 通用 RPC、`appendPluginRecord` 会话记录通道与插件管理器卡片插槽；所有监听器全程防御式降级（任何异常等价于未安装），DSH 升级后即使个别通道变化，插件也只是安静地失去该通道，不会报错或阻塞任务。
 - 切换日志默认写在插件安装目录下的 `switches.log`（随安装方式自动定位，不依赖机器路径）。
 - GUI 卡片需要宿主挂载 `remote.llm` / `remote.credentials` 服务（当前版本 DSH 均已挂载）；仅使用老版 DSH 时卡片可能不出现，但宿主侧的自动替补功能不受影响。
+- v0.8.1 之前的版本会把自定义事件以“必需”方式写入会话日志，导致该会话历史加载失败（报 "unknown to this harness and not marked ignorable"）。v0.8.1 起已改走官方 `appendPluginRecord` 通道（自动标记 `ignorable`），并在测试中加了防回退守卫。如需修复旧版本写坏的日志：`python3 scripts/repair-session-log.py --dry-run` 先扫描，去掉 `--dry-run` 执行修复（自动备份到 `~/.dsh/session-repair-backups/`）。
 
 ## 快速开始
 

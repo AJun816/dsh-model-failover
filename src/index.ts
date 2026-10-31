@@ -281,10 +281,10 @@ function reroute(resolved: LlmCallConfig, selected: FailoverEntry): LlmCallConfi
  * follow the official `plugin:` grammar (`plugin:` + lowercase slash-separated
  * segments) and are written through `appendPluginRecord`, which stamps the
  * envelope's `ignorable: true` marker so every harness build — including ones
- * that do not know the type — can keep reading the log. A plain
- * `session.append('model-failover/switch', …)` writes a REQUIRED unknown event
- * that the persistence reader refuses with "unknown to this harness and not
- * marked ignorable", breaking history load for that session.
+ * that do not know the type — can keep reading the log. A plain required-event
+ * append of a custom type writes a REQUIRED unknown event that the persistence
+ * reader refuses with "unknown to this harness and not marked ignorable",
+ * breaking history load for that session.
  */
 const SWITCH_RECORD_TYPE = 'plugin:model-failover/switch'
 
@@ -350,8 +350,8 @@ async function resolveDefaultSwitchLog(): Promise<string | undefined> {
  * Each channel is individually optional; a failure in one never blocks the others.
  */
 async function recordSwitch(ctx: ListenerContext, payload: WaterfallPayload & { agent?: { session?: unknown } }, record: SwitchRecord, logFile: string | undefined): Promise<void> {
-  // 1) session transcript plugin record (official ignorable channel; llm-retry's
-  //    `session.append` path is reserved for harness-known event types)
+  // 1) session transcript plugin record (official ignorable channel; the plain
+  //    append path is reserved for harness-known event types)
   try {
     const session = payload.agent?.session
     if (session !== undefined) {
