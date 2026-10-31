@@ -2,7 +2,7 @@
 
 > A DeepSeek Harness (DSH) plugin: automatic model & account failover across multiple providers. When one account's quota runs out, the next one takes over — the task never stops. Zero runtime dependencies.
 
-**Status**: M1 implemented, 11 automated tests passing. Full design in [DESIGN.md](DESIGN.md) (Chinese).
+**Status**: implemented, 25 automated tests passing (CI on Node 22/24). Full design in [DESIGN.md](DESIGN.md) (Chinese).
 
 ## Key Features (implemented, M1)
 

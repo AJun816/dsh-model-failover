@@ -2,7 +2,7 @@
 
 > DeepSeek Harness 插件：多供应商 / 多账号模型自动替补切换。额度用完自动换号，任务不中断。零运行时依赖。
 
-**状态**：M1 已实现并通过 18 项自动化测试。完整设计见 [DESIGN.md](DESIGN.md)。
+**状态**：已实现并通过 25 项自动化测试（CI：Node 22/24）。完整设计见 [DESIGN.md](DESIGN.md)。
 
 ## 核心能力（已实现，M1）
 
@@ -22,7 +22,7 @@
 | GitHub SSH（推荐） | `git@github.com:AJun816/dsh-model-failover.git` | 走 SSH 免密，大陆网络无代理也稳定 |
 | GitHub HTTPS | `https://github.com/AJun816/dsh-model-failover` | 需网络能直连 GitHub（或系统代理开启） |
 | npm 包名 | `dsh-model-failover` | 需先发布到 npm（或镜像源同步后） |
-| 本地目录 | `D:\github\code\dsh-model-failover` | 开发调试用，必须是绝对路径 |
+| 本地目录 | `~/projects/dsh-model-failover` | 开发调试用，必须是绝对路径 |
 
 安装说明：
 
@@ -33,6 +33,12 @@
 - **多账号（v0.6.0）**：卡片直接识别系统已配置的供应商；点「复制」只需填一把新 API Key，即为同一供应商加一个账号（如 GLM × 3）。Key 写入 DSH 加密凭据库，配置克隆自动完成，副本自动插到替补链原账号之后；支持换 Key 与删除。纯通用 RPC（`settings.mutate` / `credentials.set`），DSH 升级不易破坏。运行状态看 DSH 日志中 `model-failover:` 前缀的行。
 - 安装后把账号池配置写进 `cordis.patch.yml`（patch 层配置在 DSH 升级后保留），并重启或重载插件。
 - 插件配置键为 `model-failover`（cordis 插件名），与包名 `dsh-model-failover` 略有不同，属正常现象。
+
+### 兼容性说明
+
+- 插件只依赖 DSH 的公开插件契约：`agent/request` / `agent/request-error` 瀑布、`ctx.effect`、`ctx.logger`、`llm` 服务、`settings`/`credentials` 通用 RPC、`appendPluginRecord` 会话记录通道与插件管理器卡片插槽；所有监听器全程防御式降级（任何异常等价于未安装），DSH 升级后即使个别通道变化，插件也只是安静地失去该通道，不会报错或阻塞任务。
+- 切换日志默认写在插件安装目录下的 `switches.log`（随安装方式自动定位，不依赖机器路径）。
+- GUI 卡片需要宿主挂载 `remote.llm` / `remote.credentials` 服务（当前版本 DSH 均已挂载）；仅使用老版 DSH 时卡片可能不出现，但宿主侧的自动替补功能不受影响。
 
 ## 快速开始
 

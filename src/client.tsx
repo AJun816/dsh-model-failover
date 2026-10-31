@@ -33,7 +33,12 @@ interface FailoverConfig {
 interface NamespaceView { ns: string, value?: FailoverConfig, revision?: number, writable?: boolean }
 interface CatalogModel { id: string, name?: string }
 interface CatalogGroup { id: string, name?: string, models?: CatalogModel[] }
-interface ModelCatalog { default?: { provider?: string, model?: string }, groups?: CatalogGroup[] }
+interface ModelCatalog {
+  default?: { provider?: string, model?: string }
+  groups?: CatalogGroup[]
+  /** Providers the harness can actually route to (wire schema). */
+  routableProviders?: readonly string[]
+}
 
 const NS = 'model-failover'
 const RETRY_CLASSES = ['quota', 'rate-limit', 'auth', 'network']
@@ -240,14 +245,10 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
     })
     setDraftConfig({ ...draft, groups: [{ id: 'main', entries }] })
   }
-  /** 自动模式下的预览链：目录顺序，default 路由优先。 */
+  /** 自动模式下的预览链：与宿主实际路由一致 —— llm.listProviders() 的注册顺序。 */
   const autoPreview = useMemo(() => {
-    const ids = providerIds
     const d = catalog?.default
-    const ordered = d?.provider !== undefined && ids.includes(d.provider)
-      ? [d.provider, ...ids.filter((id) => id !== d.provider)]
-      : ids
-    return ordered.map((id) => ({
+    return providerIds.map((id) => ({
       provider: id,
       name: catalogById.get(id)?.name ?? id,
       model: d?.provider === id && d?.model !== undefined ? d.model : catalogById.get(id)?.models?.[0]?.id ?? '',
@@ -545,7 +546,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
               <h3 style={{ ...sectionTitle, margin: 0 }}>切换顺序 · 自动替补（默认）</h3>
             </div>
             <p style={hint}>
-              当前已配置 {autoPreview.length} 个 provider，按注册顺序互相替补（默认模型优先），
+              当前已配置 {autoPreview.length} 个 provider，按注册顺序互相替补，
               任一账号额度用尽自动切到下一个。下方为实时预览：
             </p>
             <ol style={{ margin: '8px 0 0', paddingLeft: 18 }}>
