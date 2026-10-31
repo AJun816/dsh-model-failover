@@ -1,74 +1,73 @@
 # dsh-model-failover
 
-> A DeepSeek Harness (DSH) plugin: automatic model & account failover across multiple providers. When one account's quota runs out, the next one takes over — the task never stops. Zero runtime dependencies.
+[![CI](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-4D6BFE.svg?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.8.4-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
 
-**Status**: implemented, 25 automated tests passing (CI on Node 22/24). Full design in [DESIGN.md](DESIGN.md) (Chinese).
+> **Automatic model & account failover plugin for DeepSeek Harness (DSH)** — when one account hits quota/rate-limit/auth errors, the next one takes over mid-task. Zero third-party runtime dependencies; every failure path degrades to "as if the plugin were not installed".
 
-## Key Features (implemented, M1)
+**Full user manual (Chinese): [README.md](README.md)** · Design notes: [DESIGN.md](DESIGN.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
 
-- ✅ Feasibility verified against DSH source: built entirely on the `agent/request` + `agent/request-error` waterfalls — an in-process "fail → switch account → retry" loop with no external proxy
-- Multi-provider (DeepSeek, GLM, any OpenAI-compatible endpoint) and multi-account per provider (e.g. GLM ×3)
-- User-defined fallback order (the YAML array order is the failover order)
-- Automatic switchover on quota exhaustion (402 / insufficient balance), rate limiting (429), and auth failures, with per-account cooldown
-- Cooldown auto-recovery (default 30 minutes) and full log observability for every switch
-- Zero third-party dependencies — depends only on public DSH plugin contracts, so DSH upgrades won't break it
+## How it works
 
-## How It Works
+Hooks DSH's two public agent-loop waterfalls, entirely in-process (no proxy, no external process):
 
 ```
-step#3:  agent/request      → planner picks glm-1
-         request fails      → 402 Insufficient Balance
-         agent/request-error → glm-1 enters cooldown (30m)
-         → returns { kind: "retry" }
-step#3:  agent/request      → planner picks glm-2 → streams normally
+agent/request      ──▶ [prepend] pick first healthy entry ──▶ rewrite provider/model (neutral fields only)
+       ▲                                                        │ failure
+       │ { kind: 'retry' } (instant switch)                      ▼
+       └────────── cool account · classify · budget/second-chance/fallback ◀── agent/request-error [prepend]
 ```
 
-The only DSH extension points used are the two public waterfall events plus
-`llm.registerConfigurableProviders` and the `credentials` service. Every
-listener degrades gracefully: if the plugin itself fails, it passes through
-`next()` and DSH behaves exactly as if the plugin were not installed.
+- **Account-level cooldown** (default 30 min, auto-recovery, honors longer Retry-After, shared across sessions)
+- **Retry-storm guard**: hops per turn/step bounded by group size; 5-min-throttled second-chance probes when everyone is cooling
+- **Catalog fallback**: when the group is exhausted, fall back to any other healthy configured provider
+- **Composes with built-in llm-retry**: always delegates downstream first; only answers `{ kind: 'retry' }` when downstream has no recovery and a healthy alternative exists
+- **Auto mode**: with no groups configured, every configured provider joins the chain automatically (registration order)
+- **GUI card** (Settings → Plugins): visual group editing, one-click account duplication (API key goes into DSH's encrypted credential store), recent-switches banner
 
 ## Install
 
-In the DSH plugin manager (Settings → Plugins → Add plugin), enter any of these sources:
+In DSH's plugin manager (Settings → Plugins → Add plugin), enter any of:
 
 | Source | Input | Notes |
 |---|---|---|
-| GitHub repo | `https://github.com/AJun816/dsh-model-failover` | works without an npm publish (recommended) |
-| npm package | `dsh-model-failover` | after it is published to npm |
-| Local directory | absolute path to this checkout | for development |
+| GitHub HTTPS (recommended) | `https://github.com/AJun816/dsh-model-failover` | works wherever GitHub is reachable |
+| GitHub SSH | `git+ssh://git@github.com/AJun816/dsh-model-failover.git` | SSH key auth; good without a proxy |
+| npm | `dsh-model-failover` | after npm publish (mirrors sync automatically) |
+| Local path | `~/projects/dsh-model-failover` | development; must be absolute |
 
-Mainland-China users can pick the npmmirror registry in the install dialog. GitHub-installed plugins update by uninstall + reinstall. After installing, put your account pool into `cordis.patch.yml` (the patch layer survives DSH upgrades) and reload the plugin. The cordis config key is `model-failover` (the plugin name), which differs slightly from the package name — that is expected.
+Do **not** use the `git@github.com:...` scp shorthand — pnpm mis-parses it into a broken `link:` dependency. Update by uninstall + reinstall.
 
-## Quick Start
+## Quick start
+
+Zero-config auto mode works out of the box. For an explicit chain:
 
 ```yaml
 # cordis.patch.yml
 model-failover:
   groups:
     - id: glm-pool
-      entries:                      # array order = fallback order
+      entries:
         - { provider: glm-1, model: glm-4.7 }
         - { provider: glm-2, model: glm-4.7 }
-        - { provider: glm-3, model: glm-4.7 }
-    - id: cross-provider            # cross-vendor safety net
-      entries:
-        - { provider: deepseek, model: deepseek-chat }
-        - { provider: glm-1, model: glm-4.7 }
   activeGroup: glm-pool
   cooldownMinutes: 30
-  retryOn: [quota, rate-limit, auth, network]
 ```
 
-## Roadmap
+## Compatibility & safety
 
-| Phase | Scope |
-|---|---|
-| M1 (MVP) | Host-only plugin: YAML account pool + the two waterfall listeners + failure classifier + cooldown state machine + logging. No UI. |
-| M2 | Register `glm-1/2/3` via `llm.registerConfigurableProviders` so they appear in Settings; one-click default-model switch via `agentDefaultModel`. |
-| M3 (optional) | Web UI: manage fallback order and per-account health / cooldown countdowns in a Settings slot. |
-| M4 (optional) | Usage statistics (session-event projection) and low-quota alerts. |
+- Uses only public plugin seams: the two waterfalls, `ctx.effect`, `ctx.logger`, the `llm` service, generic `settings`/`credentials` RPCs, the official `appendPluginRecord` session-record channel, and the plugin-manager card slot.
+- Session records are written **only** through the official ignorable channel (type `plugin:model-failover/switch`); a regression-guard test keeps it that way. The plugin cannot break session history on any DSH version.
+- All listeners and recording channels are best-effort with full degradation — DSH upgrades at worst silently disable one channel, never a task.
+- `scripts/repair-session-log.py` repairs logs damaged by pre-v0.8.1 versions (`--dry-run` to scan).
 
-## License
+## Development
 
-MIT
+```bash
+pnpm install && pnpm build && pnpm test   # 28 tests; compiled lib/ is committed — installs need no build
+```
+
+Guidelines and release flow: [CONTRIBUTING.md](CONTRIBUTING.md). MIT © AJun816.
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
