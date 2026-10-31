@@ -19,12 +19,16 @@ import { SettingsForm } from '@deepseek-ai/dsh-client-ui-primitives'
 
 interface Entry { provider: string, model: string }
 interface Group { id: string, entries: Entry[] }
+interface SwitchRecord { at: number, from: string, to: string, reason: string, via: string }
+
 interface FailoverConfig {
   groups?: Group[]
   activeGroup?: string
   cooldownMinutes?: number
   retryOn?: string[]
   autoDiscover?: boolean
+  fallbackToCatalog?: boolean
+  lastSwitches?: SwitchRecord[]
 }
 interface NamespaceView { ns: string, value?: FailoverConfig, revision?: number, writable?: boolean }
 interface CatalogModel { id: string, name?: string }
@@ -113,6 +117,8 @@ function normalize(c: FailoverConfig): FailoverConfig {
     cooldownMinutes: c.cooldownMinutes ?? 30,
     retryOn: [...(c.retryOn ?? [])].sort(),
     autoDiscover: c.autoDiscover ?? true,
+    // Host 写入的切换记录随保存原样透传，避免被覆盖丢失
+    ...(c.lastSwitches !== undefined ? { lastSwitches: c.lastSwitches } : {}),
   }
 }
 function invalidReasons(c: FailoverConfig): string[] {
@@ -487,6 +493,29 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
       onDiscard={() => { if (saved !== null) { setDraft(saved); setNotice(null) } }}
     >
       <div style={{ display: 'grid', gap: 18 }}>
+        {/* —— 切换通知（Host 写入 lastSwitches，卡片展示）—— */}
+        {(saved.lastSwitches ?? []).length > 0 ? (
+          <section style={{ ...card, borderColor: 'var(--dsw-alias-state-warn-stroke, rgba(200,140,40,0.4))' }}>
+            <div style={row}>
+              <span title="切换提示">🔁</span>
+              <strong style={{ fontSize: 13 }}>最近切换</strong>
+              <span style={{ flex: 1 }} />
+            </div>
+            <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'grid', gap: 4 }}>
+              {(saved.lastSwitches ?? []).slice(-3).reverse().map((s, i) => (
+                <li key={i} style={{ ...row, fontSize: 12 }}>
+                  <span style={{ opacity: 0.75 }}>{s.from}</span>
+                  <span>→</span>
+                  <strong style={{ color: 'var(--dsw-alias-state-warn-label, #b8860b)' }}>{s.to}</strong>
+                  <span style={{ opacity: 0.55 }}>（{s.reason}{s.via === 'fallback' ? ' · 目录兜底' : s.via === 'second-chance' ? ' · 充值探测' : ''}）</span>
+                  <span style={{ flex: 1 }} />
+                  <span style={{ opacity: 0.5 }}>{new Date(s.at).toLocaleString('zh-CN', { hour12: false })}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         {/* —— 模型（当前默认，可切换）—— */}
         <section style={surface}>
           <h3 style={sectionTitle}>模型</h3>

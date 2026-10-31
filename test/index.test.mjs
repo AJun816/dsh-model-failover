@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
@@ -383,4 +384,28 @@ test('exhausted group falls back to a healthy catalog provider', async () => {
     { agent: { id: 'x' }, turn: 1, step: 1, provider: 'glm-x', failure: { code: 'RATE_LIMIT' } },
     () => undefined)
   assert.equal(action2, undefined)
+})
+
+test('switch records land in the plugin log and session event', async () => {
+  const ctx = fakeCtx()
+  const events = []
+  const logFile = '/tmp/mf-switches-test.log'
+  fs.rmSync(logFile, { force: true })
+  const agent = { id: 'a1', session: { append: (type, data) => events.push([type, data]) } }
+  apply(ctx, config, { logFile, now: () => 1_000 })
+  // glm-1 失败 → 切 glm-2，应产生记录
+  const action = await ctx.waterfall('agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    () => 'default')
+  assert.deepEqual(action, { kind: 'retry' })
+  await new Promise((r) => setTimeout(r, 20)) // 等 recordSwitch 的异步通道完成
+  const line = fs.readFileSync(logFile, 'utf8').trim().split('\n').at(-1)
+  const record = JSON.parse(line)
+  assert.equal(record.from, 'glm-1')
+  assert.equal(record.to, 'glm-2')
+  assert.equal(record.via, 'chain')
+  const sessionEvent = events.find(([type]) => type === 'model-failover/switch')
+  assert.ok(sessionEvent, 'session event appended')
+  assert.equal(sessionEvent[1].to, 'glm-2')
+  fs.rmSync(logFile, { force: true })
 })

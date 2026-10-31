@@ -51,6 +51,16 @@ export interface Config {
     autoDiscover?: boolean;
     /** When true (default), an exhausted group falls back to any other healthy configured provider so the task never stops. */
     fallbackToCatalog?: boolean;
+    /** Recent switch records the GUI card surfaces as a notice (host-written, advisory). */
+    lastSwitches?: SwitchRecord[];
+}
+/** One recorded failover switch, surfaced in the GUI card and logs. */
+export interface SwitchRecord {
+    at: number;
+    from: string;
+    to: string;
+    reason: string;
+    via: 'chain' | 'fallback' | 'second-chance';
 }
 /**
  * Runtime schema for {@link Config}.
@@ -125,6 +135,8 @@ interface ListenerContext {
 export interface ApplyInternals {
     pool?: AccountPool;
     now?: () => number;
+    /** Override path for the plugin's switch log (tests). */
+    logFile?: string;
 }
 /**
  * Install the failover listeners.

@@ -55,6 +55,17 @@ export interface Config {
   autoDiscover?: boolean
   /** When true (default), an exhausted group falls back to any other healthy configured provider so the task never stops. */
   fallbackToCatalog?: boolean
+  /** Recent switch records the GUI card surfaces as a notice (host-written, advisory). */
+  lastSwitches?: SwitchRecord[]
+}
+
+/** One recorded failover switch, surfaced in the GUI card and logs. */
+export interface SwitchRecord {
+  at: number
+  from: string
+  to: string
+  reason: string
+  via: 'chain' | 'fallback' | 'second-chance'
 }
 
 /**
@@ -73,6 +84,13 @@ export const Config: z<Config> = z.object({
   retryOn: z.array(z.string()).default(['quota', 'rate-limit', 'auth', 'network']).volatile(),
   autoDiscover: z.boolean().default(true).volatile(),
   fallbackToCatalog: z.boolean().default(true).volatile(),
+  lastSwitches: z.array(z.object({
+    at: z.number().required(),
+    from: z.string().required(),
+    to: z.string().required(),
+    reason: z.string().required(),
+    via: z.string().required(),
+  })).default([]).volatile(),
 }) as unknown as z<Config>
 
 /** Failure classes that can trigger a switchover. */
@@ -258,6 +276,42 @@ function reroute(resolved: LlmCallConfig, selected: FailoverEntry): LlmCallConfi
   return out as unknown as LlmCallConfig
 }
 
+/**
+ * Record one failover switch through every official channel:
+ *  - a session event (`model-failover/switch`) in the turn's transcript log;
+ *  - a JSONL line in the plugin's own switch log;
+ *  - the `lastSwitches` advisory field in our settings namespace, which the
+ *    GUI card renders as a notice banner.
+ * Each channel is individually optional; a failure in one never blocks the others.
+ */
+async function recordSwitch(ctx: ListenerContext, payload: WaterfallPayload & { agent?: { session?: { append?: (type: string, data: unknown) => unknown } } }, record: SwitchRecord, logFile: string | undefined): Promise<void> {
+  // 1) session transcript event (same channel llm-retry uses)
+  try {
+    payload.agent?.session?.append?.('model-failover/switch', record)
+  } catch { /* best effort */ }
+  // 2) plugin file log (types-free dynamic import keeps the build independent of @types/node)
+  if (logFile !== undefined) {
+    try {
+      // @ts-ignore runtime-provided node builtin; typing it would force @types/node into the build
+      const fs = await import('node:fs') as { appendFileSync?: (path: string, data: string) => void }
+      fs.appendFileSync?.(logFile, JSON.stringify(record) + '\n')
+    } catch { /* best effort */ }
+  }
+  // 3) settings namespace (GUI notice); best effort with a describe-read-update cycle
+  try {
+    interface SettingsFace {
+      describe(): Promise<{ namespaces?: Array<{ ns: string, value?: { lastSwitches?: SwitchRecord[] }, revision?: number }> }>
+      update?(ns: string, patch: Record<string, unknown>, revision?: number): Promise<unknown>
+    }
+    const settings = (ctx as unknown as { get?: (name: string) => unknown }).get?.('settings') as SettingsFace | undefined
+    if (settings === undefined) return
+    const described = await settings.describe()
+    const view = described.namespaces?.find((row) => row.ns === 'model-failover')
+    const history = [...(view?.value?.lastSwitches ?? []), record].slice(-5)
+    await settings.update?.('model-failover', { lastSwitches: history }, view?.revision)
+  } catch { /* best effort: never block the retry decision */ }
+}
+
 /** The slice of cordis Context this plugin touches; keeps coupling minimal. */
 interface ListenerContext {
   on(event: string, listener: (payload: any, next: () => Promise<any>) => Promise<any>, options?: { prepend?: boolean }): () => void
@@ -278,6 +332,8 @@ interface ListenerContext {
 export interface ApplyInternals {
   pool?: AccountPool
   now?: () => number
+  /** Override path for the plugin's switch log (tests). */
+  logFile?: string
 }
 
 /** Waterfall payload shapes this plugin reads (structural, upgrade-tolerant). */
@@ -297,6 +353,11 @@ interface WaterfallPayload {
  */
 export function apply(ctx: ListenerContext, config: Config = {}, internals: ApplyInternals = {}): { pool: AccountPool } {
   const now = internals.now ?? (() => Date.now())
+  const logFile = internals.logFile ?? '/Users/ajun/.dsh/plugins/dsh-model-failover/switches.log'
+  /** Record a switch through all channels without blocking the retry decision. */
+  const note = (payload: WaterfallPayload, from: string, to: string, reason: string, via: SwitchRecord['via']): void => {
+    void recordSwitch(ctx, payload as Parameters<typeof recordSwitch>[1], { at: now(), from, to, reason, via }, logFile)
+  }
   const pool = internals.pool ?? createPool({ cooldownMs: 30 * 60_000, now })
 
   /** Which entry the current in-flight request uses, per agent key. */
@@ -459,6 +520,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
         }
       }
       if (nextUp !== undefined && (used <= group.entries.length || fallbackOk)) {
+        note(payload, failed.provider, nextUp.provider, klass, fbNext !== undefined && groupNext === undefined ? 'fallback' : 'chain')
         ;(ctx as ListenerContext).logger?.info?.(
           'model-failover: %s/%s failed (%s) → switching to %s/%s (cooldown %d min)',
           failed.provider, failed.model,
@@ -484,6 +546,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
         if (candidate !== undefined) {
           lastRevive.set(candidate.provider, now())
           pool.revive(candidate.provider)
+          note(payload, failed.provider, candidate.provider, klass + '/second-chance', 'second-chance')
           ;(ctx as ListenerContext).logger?.info?.(
             'model-failover: every account is cooling — second-chance retry on %s (recharged?)',
             candidate.provider,
