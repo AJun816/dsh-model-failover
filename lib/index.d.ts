@@ -49,6 +49,8 @@ export interface Config {
     retryOn?: string[];
     /** When true (default) and no groups are configured, every configured provider auto-joins the chain. */
     autoDiscover?: boolean;
+    /** When true (default), an exhausted group falls back to any other healthy configured provider so the task never stops. */
+    fallbackToCatalog?: boolean;
 }
 /**
  * Runtime schema for {@link Config}.
@@ -57,6 +59,11 @@ export declare const Config: z<Config>;
 /** Failure classes that can trigger a switchover. */
 export declare const FAILURE_CLASSES: readonly ['quota', 'rate-limit', 'auth', 'network', 'other'];
 export type FailureClass = typeof FAILURE_CLASSES[number];
+/**
+ * Parse a provider-stated resume time like "2026-11-05 17:10:49 后可继续使用"
+ * (weekly/period usage caps) into remaining milliseconds. Local time assumed.
+ */
+export declare function retryAfterFromMessage(message: string | null | undefined, now?: number): number;
 /**
  * Classify an LlmFailure into one of the failure classes. Code wins, message
  * keywords and HTTP status follow.
@@ -71,6 +78,8 @@ export interface AccountPool {
     cool(account: string, ms?: number): void;
     isCooling(account: string): boolean;
     recover(account: string): void;
+    /** Force one cooled account back to healthy (a second-chance probe); reports whether it was cooling. */
+    revive(account: string): boolean;
     snapshot(): Record<string, {
         coolingUntil: number;
     }>;

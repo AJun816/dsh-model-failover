@@ -65,15 +65,43 @@ const dot = (ok: boolean): CSSProperties => ({
 })
 const providerCell: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, minWidth: 210 }
 
+/** One llm-pi-ai provider route profile (secrets travel via credential refs). */
+interface RouteProfile {
+  apiKeyEnv?: string
+  displayName?: string
+  api?: string
+  baseURL?: string
+  models?: { id: string, name?: string }[]
+  [key: string]: unknown
+}
+interface SettingsOp { op: 'set' | 'unset', path: (string | number)[], value?: unknown }
+
 interface RemoteFace {
   settings: {
     describe(): Promise<{ ok: boolean, value?: { namespaces?: NamespaceView[] }, error?: { message?: string } }>
     update(ns: string, value: FailoverConfig, revision?: number): Promise<{ ok: boolean, value?: unknown, error?: { message?: string } }>
+    mutate(ns: string, ops: SettingsOp[], revision?: number): Promise<{ ok: boolean, value?: unknown, error?: { message?: string } }>
   }
   session: {
     modelCatalog(): Promise<{ ok: boolean, value?: ModelCatalog, error?: { message?: string } }>
   }
+  credentials?: {
+    describe(refs: string[]): Promise<{ ok: boolean, value?: Record<string, unknown>, error?: { message?: string } }>
+    set(ref: string, value: string): Promise<{ ok: boolean, value?: unknown, error?: { message?: string } }>
+    unset(ref: string): Promise<{ ok: boolean, value?: unknown, error?: { message?: string } }>
+  }
+  llm?: {
+    listConfigurableProviders(): Promise<{ ok: boolean, value?: Array<{ provider: string, displayName?: string, defaultBaseURL?: string }>, error?: { message?: string } }>
+    discoverModels(ns: string, request: { provider?: string, baseURL?: string }): Promise<{ ok: boolean, value?: Array<{ id: string, name?: string, contextWindow?: number, maxTokens?: number, inputModalities?: string[] }>, error?: { message?: string } }>
+  }
 }
+
+const PI_AI_NS = 'llm-pi-ai'
+/** Same convention as the stock Models page: glm-2 -> GLM_2_API_KEY. */
+function deriveKeyRef(route: string): string {
+  return route.toUpperCase().replace(/[^A-Z0-9]+/g, '_') + '_API_KEY'
+}
+const ROUTE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 
 function sameConfig(a: FailoverConfig, b: FailoverConfig): boolean {
   return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b))
@@ -109,10 +137,27 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
   const [notice, setNotice] = useState<{ failed: boolean, text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
+  /** llm-pi-ai provider routes (the account pool this card manages). */
+  const [routes, setRoutes] = useState<Record<string, RouteProfile> | null>(null)
+  const [piAiRevision, setPiAiRevision] = useState<number | undefined>(undefined)
+  /** Which credential refs have a stored value, by ref name. */
+  const [credConfigured, setCredConfigured] = useState<Record<string, boolean>>({})
+  /** llm configurable-provider directory (defaultBaseURL per vendor). */
+  const [providerDir, setProviderDir] = useState<Array<{ provider: string, displayName?: string, defaultBaseURL?: string }> | null>(null)
+  /** 当前默认模型（agent-default-model 命名空间）。 */
+  const [defaultModel, setDefaultModel] = useState<{ provider?: string, model?: string } | null>(null)
+  const [admRevision, setAdmRevision] = useState<number | undefined>(undefined)
+  const [dmProvider, setDmProvider] = useState('')
+  const [dmModel, setDmModel] = useState('')
+  const [dmBusy, setDmBusy] = useState(false)
 
   const remote = props.remote
   const reload = useCallback(async () => {
     if (remote === undefined) return
+    if (remote.settings === undefined || remote.session === undefined) {
+      setNotice({ failed: true, text: '当前 DSH 版本未提供 settings/session 服务，插件卡片不可用（不影响其他功能）' })
+      return
+    }
     try {
       const response = await remote.settings.describe()
       if (response?.ok !== true) { setNotice({ failed: true, text: '读取配置失败：' + (response?.error?.message ?? '') }); return }
@@ -123,6 +168,27 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
       setRevision(view.revision)
       setWritable(view.writable !== false)
       setNotice(null)
+      const adm = response.value?.namespaces?.find((row) => row.ns === 'agent-default-model')
+      setDefaultModel((adm?.value as { provider?: string, model?: string } | undefined) ?? null)
+      setAdmRevision(adm?.revision)
+      setDmProvider((adm?.value as { provider?: string } | undefined)?.provider ?? '')
+      setDmModel((adm?.value as { model?: string } | undefined)?.model ?? '')
+      const piAi = response.value?.namespaces?.find((row) => row.ns === PI_AI_NS)
+      const providers = (piAi?.value as { providers?: Record<string, RouteProfile> } | undefined)?.providers ?? {}
+      setRoutes(providers)
+      setPiAiRevision(piAi?.revision)
+      const refs = Object.entries(providers)
+        .map(([route, profile]) => profile.apiKeyEnv ?? deriveKeyRef(route))
+      if (remote.credentials !== undefined && refs.length > 0) {
+        try {
+          const answer = await remote.credentials.describe(refs)
+          if (answer?.ok === true && answer.value !== undefined) {
+            const map: Record<string, boolean> = {}
+            for (const [ref, v] of Object.entries(answer.value)) map[ref] = v !== undefined && v !== null && v !== ''
+            setCredConfigured(map)
+          }
+        } catch { /* credential status is optional decoration */ }
+      }
     } catch (error) { setNotice({ failed: true, text: String(error) }) }
   }, [remote])
 
@@ -135,6 +201,10 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
         const response = await remote.session.modelCatalog()
         if (alive && response?.ok === true) setCatalog(response.value ?? null)
       } catch { /* catalog optional */ }
+      try {
+        const response = await remote.llm?.listConfigurableProviders()
+        if (alive && response?.ok === true) setProviderDir(response.value ?? [])
+      } catch { /* directory optional */ }
     })()
     return () => { alive = false }
   }, [remote, props.view, reload])
@@ -194,6 +264,143 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
       setNotice({ failed: true, text: String(error) })
     } finally { setBusy(false) }
   }, [remote, draft, revision, reload])
+
+  /* —— 多账号：识别系统已配置的供应商，一键复制出多把 Key —— */
+  const [acctBusy, setAcctBusy] = useState(false)
+  const [copyOf, setCopyOf] = useState('')
+  const [copyKey, setCopyKey] = useState('')
+  const [editOf, setEditOf] = useState('')
+  const [editKey, setEditKey] = useState('')
+
+  /** route 是否 baseId 的副本（baseId-2、baseId-3…）。 */
+  const isCloneOf = (route: string, baseId: string): boolean =>
+    route.startsWith(baseId + '-') && /^\d+$/.test(route.slice(baseId.length + 1))
+
+  /** 复制供应商：只需填新 Key。克隆 profile → 新路由 → 存凭据 → 插入替补链。 */
+  const copyProvider = async (baseId: string): Promise<void> => {
+    if (remote === undefined || draft === null || routes === null) return
+    const base = routes[baseId]
+    if (base === undefined || copyKey.trim() === '') return
+    let n = 2
+    while (routes[baseId + '-' + n] !== undefined) n += 1
+    const route = baseId + '-' + n
+    setAcctBusy(true)
+    try {
+      const keyRef = deriveKeyRef(route)
+      /* 100% 对齐系统「新增模型」(CustomProviderCard) 的 profile 构成：
+         只写 displayName?/apiKeyEnv/api/baseURL/models。
+         baseURL 取用户层 ?? 目录 defaultBaseURL；models 取用户层 ?? discoverModels。 */
+      const dirEntry = providerDir?.find((row) => row.provider === baseId)
+      const baseURL = String(base.baseURL ?? dirEntry?.defaultBaseURL ?? '')
+      if (baseURL === '') {
+        setNotice({ failed: true, text: '无法确定 ' + baseId + ' 的 baseURL，请先在 设置→模型 为它完成一次配置' })
+        return
+      }
+      let models = base.models ?? []
+      if (models.length === 0) {
+        const discovered = await remote.llm?.discoverModels(PI_AI_NS, { provider: baseId })
+        if (discovered?.ok !== true || (discovered.value ?? []).length === 0) {
+          setNotice({ failed: true, text: '获取 ' + baseId + ' 的模型列表失败：' + (discovered?.error?.message ?? '请先在 设置→模型 为它完成一次配置') })
+          return
+        }
+        models = (discovered.value ?? []).map((m) => ({
+          id: m.id,
+          ...m.name === undefined ? {} : { name: m.name },
+          ...m.contextWindow === undefined ? {} : { contextWindow: m.contextWindow },
+          ...m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens },
+          ...m.inputModalities === undefined ? {} : { input: [...m.inputModalities] },
+        }))
+      }
+      const guessApi = (): string => {
+        if (base.api !== undefined) return String(base.api)
+        const s = (baseId + ' ' + baseURL).toLowerCase()
+        return s.includes('anthropic') || s.includes('claude') ? 'anthropic-messages' : 'openai-completions'
+      }
+      const profile: RouteProfile = { apiKeyEnv: keyRef, api: guessApi(), baseURL, models: models.map((m) => ({ ...m })) }
+      const written = await remote.settings.mutate(PI_AI_NS, [{ op: 'set', path: ['providers', route], value: profile }], piAiRevision)
+      if (written?.ok !== true) { setNotice({ failed: true, text: '写入供应商配置失败：' + (written?.error?.message ?? '') }); return }
+      if (remote.credentials !== undefined) {
+        const stored = await remote.credentials.set(keyRef, copyKey.trim())
+        if (stored?.ok !== true) { setNotice({ failed: true, text: '路由已创建，但 Key 存储失败：' + (stored?.error?.message ?? '') }); return }
+      }
+      // 手动替补链里：紧跟在原账号（及其副本）之后插入新账号；自动模式无需干预
+      let next: FailoverConfig = draft
+      if ((draft.groups ?? []).length > 0) {
+        next = {
+          ...draft,
+          groups: (draft.groups ?? []).map((g) => {
+            const entries = (g.entries ?? []).map((x) => ({ provider: x.provider, model: x.model }))
+            let last = -1
+            for (let i = 0; i < entries.length; i++) {
+              if (entries[i].provider === baseId || isCloneOf(entries[i].provider, baseId)) last = i
+            }
+            if (last === -1) return { id: g.id, entries }
+            entries.splice(last + 1, 0, { provider: route, model: entries[last].model })
+            return { id: g.id, entries }
+          }),
+        }
+        const savedChain = await remote.settings.update(NS, next, revision)
+        if (savedChain?.ok !== true) setNotice({ failed: true, text: '账号已创建，但插入替补链失败：' + (savedChain?.error?.message ?? '') })
+        else { setDraft(next); setSaved(next) }
+      }
+      if (notice?.failed !== true) setNotice({ failed: false, text: '已复制 ' + baseId + ' → ' + route + '，Key 已加密存储' })
+      setCopyOf(''); setCopyKey('')
+      void reload()
+    } catch (error) {
+      setNotice({ failed: true, text: String(error) })
+    } finally { setAcctBusy(false) }
+  }
+
+  /** 为一条副本路由更换 API Key。 */
+  const rekeyRoute = async (route: string): Promise<void> => {
+    if (remote === undefined || remote.credentials === undefined || editKey.trim() === '') return
+    setAcctBusy(true)
+    try {
+      const ref = routes?.[route]?.apiKeyEnv ?? deriveKeyRef(route)
+      const r = await remote.credentials.set(ref, editKey.trim())
+      if (r?.ok === true) { setNotice({ failed: false, text: route + ' 的 Key 已更新' }); setEditOf(''); setEditKey(''); void reload() }
+      else setNotice({ failed: true, text: 'Key 写入失败：' + (r?.error?.message ?? '') })
+    } catch (error) {
+      setNotice({ failed: true, text: String(error) })
+    } finally { setAcctBusy(false) }
+  }
+
+  const removeAccount = async (route: string): Promise<void> => {
+    if (remote === undefined || draft === null || routes === null) return
+    if (!window.confirm('删除账号 ' + route + '？将同时移除其配置、凭据与替补链条目。')) return
+    setAcctBusy(true)
+    try {
+      const profile = routes[route]
+      const ref = profile?.apiKeyEnv ?? deriveKeyRef(route)
+      const removed = await remote.settings.mutate(PI_AI_NS, [{ op: 'unset', path: ['providers', route] }], piAiRevision)
+      if (removed?.ok !== true) { setNotice({ failed: true, text: '删除路由失败：' + (removed?.error?.message ?? '') }); return }
+      if (remote.credentials !== undefined) { try { await remote.credentials.unset(ref) } catch { /* best effort */ } }
+      const next: FailoverConfig = { ...draft, groups: (draft.groups ?? []).map((g) => ({ id: g.id, entries: (g.entries ?? []).filter((x) => x.provider !== route).map((x) => ({ provider: x.provider, model: x.model })) })) }
+      const savedChain = await remote.settings.update(NS, next, revision)
+      if (savedChain?.ok !== true) setNotice({ failed: true, text: '路由已删除，但更新替补链失败：' + (savedChain?.error?.message ?? '') })
+      else { setNotice({ failed: false, text: '账号 ' + route + ' 已删除' }); setDraft(next); setSaved(next) }
+      void reload()
+    } catch (error) {
+      setNotice({ failed: true, text: String(error) })
+    } finally { setAcctBusy(false) }
+  }
+
+  /** 切换默认模型（与官方 设置→模型 同一命名空间与写入方式）。 */
+  const saveDefaultModel = async (): Promise<void> => {
+    if (remote === undefined || dmProvider === '' || dmModel === '') return
+    setDmBusy(true)
+    try {
+      const w = await remote.settings.mutate('agent-default-model', [
+        { op: 'set', path: ['provider'], value: dmProvider },
+        { op: 'set', path: ['model'], value: dmModel },
+      ], admRevision)
+      if (w?.ok !== true) { setNotice({ failed: true, text: '切换默认模型失败：' + (w?.error?.message ?? '') }); return }
+      setNotice({ failed: false, text: '默认模型已切换为 ' + dmProvider + ' / ' + dmModel })
+      void reload()
+    } catch (error) {
+      setNotice({ failed: true, text: String(error) })
+    } finally { setDmBusy(false) }
+  }
 
   if (props.view === 'summary') {
     return '多供应商 / 多账号模型自动替补：额度用完自动按替补顺序切换下一棒，任务不中断（Model & account failover）'
@@ -280,12 +487,33 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
       onDiscard={() => { if (saved !== null) { setDraft(saved); setNotice(null) } }}
     >
       <div style={{ display: 'grid', gap: 18 }}>
-        {/* —— 自动模式 —— */}
+        {/* —— 模型（当前默认，可切换）—— */}
+        <section style={surface}>
+          <h3 style={sectionTitle}>模型</h3>
+          <div style={card}>
+            <div style={row}>
+              <span style={dot(defaultModel?.provider !== undefined && defaultModel.provider !== '')} />
+              <select value={dmProvider} style={selectStyle}
+                onChange={(e) => { setDmProvider(e.target.value); setDmModel(catalogById.get(e.target.value)?.models?.[0]?.id ?? '') }}>
+                {providerIds.map((id) => <option key={id} value={id}>{catalogById.get(id)?.name ?? id}</option>)}
+              </select>
+              <select value={dmModel} style={selectStyle} onChange={(e) => setDmModel(e.target.value)}>
+                {(catalogById.get(dmProvider)?.models ?? []).map((m) => <option key={m.id} value={m.id}>{m.name !== undefined && m.name !== m.id ? m.name + ' · ' + m.id : m.id}</option>)}
+              </select>
+              <span style={{ flex: 1 }} />
+              <Button variant="outline" disabled={dmBusy || dmProvider === '' || dmModel === '' || (dmProvider === defaultModel?.provider && dmModel === defaultModel?.model)}
+                onClick={() => void saveDefaultModel()}>切换</Button>
+            </div>
+            <p style={hint}>当前默认模型，可在此直接切换。任一账号失败/额度用尽时，毫秒级立即切换到顺序中的下一个健康账号，任务不中断；故障账号冷却 {draft.cooldownMinutes ?? 30} 分钟后自动归队。</p>
+          </div>
+        </section>
+
+        {/* —— 切换顺序：自动 —— */}
         {autoMode ? (
           <section style={surface}>
             <div style={row}>
               <span style={dot(true)} />
-              <h3 style={{ ...sectionTitle, margin: 0 }}>自动替补已启用（默认）</h3>
+              <h3 style={{ ...sectionTitle, margin: 0 }}>切换顺序 · 自动替补（默认）</h3>
             </div>
             <p style={hint}>
               当前已配置 {autoPreview.length} 个 provider，按注册顺序互相替补（默认模型优先），
@@ -315,7 +543,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
         ) : (
           <section style={surface}>
             <div style={row}>
-              <h3 style={{ ...sectionTitle, margin: 0 }}>手动替补链</h3>
+              <h3 style={{ ...sectionTitle, margin: 0 }}>切换顺序 · 手动替补链</h3>
               <span style={{ flex: 1 }} />
               <Button variant="ghost" onClick={() => setDraftConfig({ ...draft, groups: [] })}>清空，回到自动模式</Button>
             </div>
@@ -355,32 +583,97 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
           </section>
         )}
 
-        {/* —— 切换策略 —— */}
+        {/* —— 多账号：同一供应商多把 Key —— */}
         <section style={surface}>
-          <h3 style={sectionTitle}>切换策略</h3>
-          <div style={row}>
-            <label style={{ display: 'grid', gap: 4 }}>
-              <span style={{ ...mutedTitle }}>冷却（分钟）cooldown</span>
-              <Input type="number" min={1} value={draft.cooldownMinutes ?? 30} style={{ width: 130 }}
-                onChange={(e) => setDraftConfig({ ...draft, cooldownMinutes: Number(e.target.value) || 30 })} />
-            </label>
-            <div style={{ display: 'grid', gap: 4 }}>
-              <span style={mutedTitle}>触发切换的错误类别 retry on</span>
-              <div style={row}>
-                {RETRY_CLASSES.map((klass) => (
-                  <Checkbox key={klass} checked={(draft.retryOn ?? RETRY_CLASSES).includes(klass)} label={klass}
-                    title={RETRY_HINT[klass]}
-                    onChange={(next) => {
-                      const current = new Set(draft.retryOn ?? RETRY_CLASSES)
-                      if (next) current.add(klass)
-                      else current.delete(klass)
-                      setDraftConfig({ ...draft, retryOn: [...current] })
-                    }} />
-                ))}
-              </div>
-            </div>
-          </div>
+          <h3 style={sectionTitle}>账号（多 Key）</h3>
+          <p style={hint}>自动识别系统已配置的供应商。点「复制」只需填一把新 Key，即可为同一供应商加一个账号（如 GLM × 3）；额度用尽自动切到下一个，其余配置零重复。</p>
+          {catalog === null || routes === null ? <p style={hint}>正在读取系统模型配置…</p> : (
+            <ul style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'grid', gap: 8 }}>
+              {providerIds.filter((id) => !providerIds.some((other) => other !== id && isCloneOf(id, other))).map((baseId) => {
+                const info = catalogById.get(baseId)
+                const baseProfile = routes[baseId]
+                const clones = Object.keys(routes).filter((r) => isCloneOf(r, baseId)).sort()
+                const ref = baseProfile?.apiKeyEnv ?? deriveKeyRef(baseId)
+                const copying = copyOf === baseId
+                return (
+                  <li key={baseId} style={card}>
+                    <div style={row}>
+                      <span style={dot(credConfigured[ref] === true)} title={credConfigured[ref] === true ? 'Key 已配置' : 'Key 未配置'} />
+                      <strong>{info?.name ?? baseId}</strong>
+                      <span style={{ opacity: 0.5, fontSize: 12 }}>{baseId}</span>
+                      {clones.length > 0 ? <span style={{ opacity: 0.6, fontSize: 12 }}>已加 {clones.length} 个账号</span> : null}
+                      <span style={{ flex: 1 }} />
+                      {copying ? (
+                        <>
+                          <Input type="password" placeholder="新账号的 API Key" style={{ width: 240 }} value={copyKey} onChange={(e) => setCopyKey(e.target.value)} />
+                          <Button variant="outline" disabled={acctBusy || copyKey.trim() === ''} onClick={() => void copyProvider(baseId)}>保存</Button>
+                          <Button variant="ghost" onClick={() => { setCopyOf(''); setCopyKey('') }}>取消</Button>
+                        </>
+                      ) : (
+                        <Button variant="ghost" disabled={baseProfile === undefined || acctBusy} title={baseProfile === undefined ? '该供应商尚未配置，请先在 设置→模型 完成一次配置' : '复制此供应商，为新账号填一把新 Key'} onClick={() => { setCopyOf(baseId); setCopyKey('') }}>复制</Button>
+                      )}
+                    </div>
+                    {clones.length > 0 ? (
+                      <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0, display: 'grid', gap: 4 }}>
+                        {clones.map((route) => {
+                          const cref = routes[route]?.apiKeyEnv ?? deriveKeyRef(route)
+                          const cok = credConfigured[cref] === true
+                          const editing = editOf === route
+                          return (
+                            <li key={route} style={{ ...row, paddingLeft: 4 }}>
+                              <span style={dot(cok)} title={cok ? 'Key 已配置' : 'Key 未配置'} />
+                              <span style={{ fontSize: 13, minWidth: 110 }}>{route}</span>
+                              {(() => {
+                                const opts = (routes[route]?.models ?? []).map((m) => m.id)
+                                let chained
+                                for (const g of draft.groups ?? []) {
+                                  const hit = (g.entries ?? []).find((x) => x.provider === route)
+                                  if (hit !== undefined) { chained = hit.model; break }
+                                }
+                                const current = chained ?? opts[0] ?? ''
+                                const options = opts.includes(current) ? opts : [current, ...opts]
+                                return (
+                                  <select value={current} title={chained === undefined ? '该账号不在替补链中' : '此账号在替补链中使用的模型（修改后需保存）'}
+                                    style={{ ...selectStyle, fontSize: 12, flex: 1, maxWidth: 200 }}
+                                    onChange={(e) => {
+                                      const model = e.target.value
+                                      const groups = (draft.groups ?? []).map((g) => ({
+                                        id: g.id,
+                                        entries: (g.entries ?? []).map((x) => x.provider === route ? { provider: x.provider, model } : x),
+                                      }))
+                                      const touched = groups.some((g) => (g.entries ?? []).some((x) => x.provider === route))
+                                      if (!touched) { setNotice({ failed: true, text: route + ' 不在替补链中，请先复制或手动加入' }); return }
+                                      setDraftConfig({ ...draft, groups })
+                                    }}>
+                                    {options.map((id) => <option key={id} value={id}>{id}</option>)}
+                                  </select>
+                                )
+                              })()}
+                              {editing ? (
+                                <>
+                                  <Input type="password" placeholder="新的 API Key" style={{ width: 200 }} value={editKey} onChange={(e) => setEditKey(e.target.value)} />
+                                  <Button variant="outline" disabled={acctBusy || editKey.trim() === ''} onClick={() => void rekeyRoute(route)}>保存</Button>
+                                  <Button variant="ghost" onClick={() => { setEditOf(''); setEditKey('') }}>取消</Button>
+                                </>
+                              ) : (
+                                <>
+                                  <Button variant="ghost" disabled={!cok || remote.credentials === undefined} onClick={() => { setEditOf(route); setEditKey('') }}>换 Key</Button>
+                                  <Button variant="ghost" disabled={acctBusy} onClick={() => void removeAccount(route)}>删除</Button>
+                                </>
+                              )}
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
         </section>
+
+        {/* 高级策略（冷却/触发类别）保留为配置项，默认值即可，不再暴露 UI */}
 
         {problems.length > 0 ? <p style={{ ...hint, color: 'var(--dsw-alias-text-danger, #c33)' }}>⚠ {problems.join('；')}</p> : null}
         {notice !== null && !notice.failed ? <p style={hint}>{notice.text}</p> : null}
@@ -390,7 +683,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
 }
 
 /** Browser plugin body. */
-export const inject = ['slots', 'remote', 'remote.settings', 'remote.session']
+export const inject = ['slots', 'remote', 'remote.settings', 'remote.session', 'remote.llm', 'remote.credentials']
 
 export function apply(ctx: { slots: SlotsFace, remote: RemoteFace, effect?: (factory: () => () => void, label?: string) => void }): void {
   const register = (): (() => void) => ctx.slots.inject('plugins.item', () => ctx.slots.register({

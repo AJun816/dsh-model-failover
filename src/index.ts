@@ -53,6 +53,8 @@ export interface Config {
   retryOn?: string[]
   /** When true (default) and no groups are configured, every configured provider auto-joins the chain. */
   autoDiscover?: boolean
+  /** When true (default), an exhausted group falls back to any other healthy configured provider so the task never stops. */
+  fallbackToCatalog?: boolean
 }
 
 /**
@@ -70,6 +72,7 @@ export const Config: z<Config> = z.object({
   cooldownMinutes: z.number().default(30).volatile(),
   retryOn: z.array(z.string()).default(['quota', 'rate-limit', 'auth', 'network']).volatile(),
   autoDiscover: z.boolean().default(true).volatile(),
+  fallbackToCatalog: z.boolean().default(true).volatile(),
 }) as unknown as z<Config>
 
 /** Failure classes that can trigger a switchover. */
@@ -85,11 +88,24 @@ const CODE_CLASS: readonly (readonly [RegExp, FailureClass])[] = [
 ]
 
 const MESSAGE_CLASS: readonly (readonly [RegExp, FailureClass])[] = [
-  [/insufficient\s+balance|quota|额度|余额/i, 'quota'],
-  [/rate\s*limit|too many requests/i, 'rate-limit'],
+  [/insufficient\s+balance|quota|额度|余额|使用上限|usage\s*limit/i, 'quota'],
+  [/rate\s*limit|too many requests|限流|请求过于频繁|稍后(再试|重试)/i, 'rate-limit'],
   [/invalid\s+api\s*key|unauthorized|forbidden|authentication/i, 'auth'],
   [/network|econnreset|econnrefused|etimedout|fetch failed|timeout|overload|服务繁忙/i, 'network'],
 ]
+
+/**
+ * Parse a provider-stated resume time like "2026-11-05 17:10:49 后可继续使用"
+ * (weekly/period usage caps) into remaining milliseconds. Local time assumed.
+ */
+export function retryAfterFromMessage(message: string | null | undefined, now: number = Date.now()): number {
+  if (typeof message !== 'string' || message === '') return 0
+  const hit = /(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(:\d{2})?)/.exec(message)
+  if (hit === null) return 0
+  const time = hit[3] === undefined ? hit[2] + ':00' : hit[2]
+  const until = Date.parse(hit[1] + 'T' + time)
+  return Number.isFinite(until) ? Math.max(0, until - now) : 0
+}
 
 const STATUS_CLASS: ReadonlyMap<number, FailureClass> = new Map([
   [402, 'quota'], [429, 'rate-limit'], [401, 'auth'], [403, 'auth'],
@@ -107,8 +123,11 @@ export function classifyFailure(failure: LlmFailure | { message?: string, code?:
   if (failure === null || failure === undefined || typeof failure !== 'object') return 'other'
   const code = String(failure.code ?? '')
   for (const [pattern, klass] of CODE_CLASS) if (pattern.test(code)) return klass
-  const statusHit = STATUS_CLASS.get(failure.status ?? NaN)
+  // A numeric string code ("429", "1310"-style HTTP echoes) maps like a status.
+  const numeric = /^\d{3}$/.test(code) ? Number(code) : undefined
+  const statusHit = STATUS_CLASS.get(failure.status ?? numeric ?? NaN)
   if (statusHit !== undefined) return statusHit
+  if (/^13[0-9]{2}$/.test(code)) return code === '1302' ? 'rate-limit' : 'quota'
   const message = String(failure.message ?? '')
   for (const [pattern, klass] of MESSAGE_CLASS) if (pattern.test(message)) return klass
   return 'other'
@@ -119,6 +138,8 @@ export interface AccountPool {
   cool(account: string, ms?: number): void
   isCooling(account: string): boolean
   recover(account: string): void
+  /** Force one cooled account back to healthy (a second-chance probe); reports whether it was cooling. */
+  revive(account: string): boolean
   snapshot(): Record<string, { coolingUntil: number }>
 }
 
@@ -153,6 +174,12 @@ export function createPool(options: { cooldownMs: number, now?: () => number }):
     cooling.delete(account)
   }
 
+  function revive(account: string): boolean {
+    const wasCooling = cooling.get(account) !== undefined
+    cooling.delete(account)
+    return wasCooling
+  }
+
   function snapshot(): Record<string, { coolingUntil: number }> {
     const out: Record<string, { coolingUntil: number }> = {}
     for (const [account, { until }] of cooling) {
@@ -161,7 +188,7 @@ export function createPool(options: { cooldownMs: number, now?: () => number }):
     return out
   }
 
-  return { cool, isCooling, recover, snapshot }
+  return { cool, isCooling, recover, revive, snapshot }
 }
 
 function firstHealthyEntry(entries: readonly FailoverEntry[], pool: AccountPool): FailoverEntry | undefined {
@@ -185,6 +212,40 @@ function finiteOr(value: unknown, fallback: number): number {
   const n = Number(value)
   return Number.isFinite(n) && n >= 0 ? n : fallback
 }
+
+/** Volatile fields may be plain values or live refs exposing .get(); read both. */
+function valueOf<T>(value: unknown): T | undefined {
+  if (value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    try { return (value as { get: () => T }).get() } catch { return undefined }
+  }
+  return value as T
+}
+
+function entriesOf(value: unknown): FailoverEntry[] {
+  const inner = valueOf<FailoverEntry[]>(value)
+  return Array.isArray(inner) ? inner : []
+}
+
+function stringOf(value: unknown): string {
+  const inner = valueOf<string>(value)
+  return typeof inner === 'string' ? inner : ''
+}
+
+function stringListOf(value: unknown): string[] {
+  const inner = valueOf<string[]>(value)
+  return Array.isArray(inner) ? inner : []
+}
+
+function boolOf(value: unknown, fallback: boolean): boolean {
+  const inner = valueOf<boolean>(value)
+  return typeof inner === 'boolean' ? inner : fallback
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  const inner = valueOf<number>(value)
+  return typeof inner === 'number' && Number.isFinite(inner) ? inner : fallback
+}
+
 
 /** Rebuild the routed config, keeping only neutral fields across providers. */
 function reroute(resolved: LlmCallConfig, selected: FailoverEntry): LlmCallConfig {
@@ -242,6 +303,12 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
   const inFlight = new Map<string, FailoverEntry>()
   /** Consecutive failover retries per agent key and turn/step. */
   const retryBudget = new Map<string, number>()
+  /** Catalog-fallback hops per agent key and turn/step (separate small budget). */
+  const fallbackBudget = new Map<string, number>()
+  /** Last second-chance revive per provider, throttling probes on fully-cooled pools. */
+  const lastRevive = new Map<string, number>()
+  /** Minimum spacing between second-chance probes of one provider. */
+  const REVIVE_INTERVAL_MS = 5 * 60_000
 
   const agentKey = (payload: WaterfallPayload | undefined): string | undefined => {
     const agent = payload?.agent
@@ -281,12 +348,21 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
    * the pool's cooling state deliberately survives re-wiring.
    */
   const wire = (): (() => void) => {
-    const cooldownMs = finiteOr(config.cooldownMinutes, 30) * 60_000
-    const retryOn = new Set(Array.isArray(config.retryOn) ? config.retryOn : ['quota', 'rate-limit', 'auth', 'network'])
-    const autoOn = config.autoDiscover !== false
+    const cooldownMs = numberOr(config.cooldownMinutes, 30) * 60_000
+    const retryOn = new Set(stringListOf(config.retryOn).length > 0 ? stringListOf(config.retryOn) : ['quota', 'rate-limit', 'auth', 'network'])
+    const autoOn = boolOf(config.autoDiscover, true)
+    const fallbackOn = boolOf(config.fallbackToCatalog, true)
+    /** First healthy entry outside the active group (catalog fallback). */
+    const fallbackEntry = (): FailoverEntry | undefined => {
+      if (!fallbackOn || group === undefined) return undefined
+      const inGroup = new Set(group.entries.map((entry) => entry.provider))
+      return autoEntries.find((entry) => !inGroup.has(entry.provider) && !pool.isCooling(entry.provider))
+    }
 
-    let group: FailoverGroup | undefined = activeGroupOf(config)
-    if ((config.groups ?? []).length === 0 && autoOn) {
+    const groupsRaw = valueOf<FailoverGroup[]>(config.groups)
+    const groupsValue = Array.isArray(groupsRaw) ? groupsRaw : []
+    let group: FailoverGroup | undefined = activeGroupOf({ groups: groupsValue, activeGroup: stringOf(config.activeGroup) })
+    if (groupsValue.length === 0 && autoOn) {
       group = { id: 'auto', entries: autoEntries }
     }
 
@@ -299,7 +375,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     const offRequest = (ctx as ListenerContext).on('agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
     try {
       const resolved = await next()
-      const selected = firstHealthyEntry(group.entries, pool)
+      const selected = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
       const key = agentKey(payload)
       if (selected === undefined || key === undefined) {
         if (key !== undefined) inFlight.delete(key)
@@ -311,7 +387,12 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
       ;(ctx as ListenerContext).logger?.warn?.('model-failover: agent/request listener failed, passing through: %o', error)
       throw error
     }
-  })
+    // Prepend: the OUTERMOST listener's return value is the final routing
+    // config. agent-default-model (and any other outer listener) may return
+    // its own config and discard downstream edits when the turn uses the
+    // "Default" model selection — prepending here makes our failover reroute
+    // the value the loop actually uses.
+    }, { prepend: true })
 
     // Prepend so this listener always runs before same-waterfall recovery
     // policies (e.g. llm-retry): the account is cooled no matter who decides
@@ -342,12 +423,76 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
         done()
         return next()
       }
-      const retryAfter = finiteOr(failure?.providerRetryAfterMs, 0)
+      const retryAfter = Math.max(
+        finiteOr(failure?.providerRetryAfterMs, 0),
+        retryAfterFromMessage(String((failure as { message?: string } | undefined)?.message ?? ''), now()),
+      )
       pool.cool(failed.provider, Math.max(cooldownMs, retryAfter))
 
-      // Always delegate: downstream recovery (llm-retry backoff) wins if it
-      // has one; its retry re-enters agent/request, which now skips the
-      // cooled account.
+      // Instant failover: switching to a DIFFERENT healthy account needs no
+      // backoff, so we answer { kind: 'retry' } directly instead of delegating
+      // to llm-retry (whose listener would sleep on its exponential delay
+      // before returning the same decision). Downstream recovery still handles
+      // every case we cannot solve ourselves below.
+      let used = 1
+      if (stepKey === undefined) {
+        // Unkeyed agents cannot accumulate a budget; the pool bound still applies.
+        used = 1
+      } else {
+        used = (retryBudget.get(stepKey) ?? 0) + 1
+        retryBudget.set(stepKey, used)
+      }
+      if (retryBudget.size > 1000) retryBudget.clear()
+
+      const groupNext = firstHealthyEntry(group.entries, pool)
+      const fbNext = groupNext === undefined ? fallbackEntry() : undefined
+      const nextUp = groupNext ?? fbNext
+      // Catalog-fallback hops get their own small budget so a group pass stays bounded.
+      let fallbackOk = false
+      if (fbNext !== undefined) {
+        if (stepKey === undefined) fallbackOk = true
+        else {
+          const used2 = (fallbackBudget.get(stepKey) ?? 0) + 1
+          fallbackBudget.set(stepKey, used2)
+          if (fallbackBudget.size > 1000) fallbackBudget.clear()
+          fallbackOk = used2 <= 2
+        }
+      }
+      if (nextUp !== undefined && (used <= group.entries.length || fallbackOk)) {
+        ;(ctx as ListenerContext).logger?.info?.(
+          'model-failover: %s/%s failed (%s) → switching to %s/%s (cooldown %d min)',
+          failed.provider, failed.model,
+          klass,
+          nextUp.provider, nextUp.model,
+          Math.round(Math.max(cooldownMs, retryAfter) / 60_000),
+        )
+        done()
+        return { kind: 'retry' }
+      }
+
+      // Second chance: every account is cooling, but the user may have
+      // recharged one meanwhile. Revive the first cooled entry (chain order,
+      // throttled to one probe per provider per REVIVE_INTERVAL_MS) and let the
+      // real request itself probe it — success means real quota, a retryable
+      // failure simply re-cools it (extends-only) at no extra cost.
+      if (nextUp === undefined && used <= group.entries.length + 1) {
+        const candidate = group.entries.find((entry) => {
+          if (!pool.isCooling(entry.provider)) return false
+          const last = lastRevive.get(entry.provider) ?? Number.NEGATIVE_INFINITY
+          return now() - last >= REVIVE_INTERVAL_MS
+        })
+        if (candidate !== undefined) {
+          lastRevive.set(candidate.provider, now())
+          pool.revive(candidate.provider)
+          ;(ctx as ListenerContext).logger?.info?.(
+            'model-failover: every account is cooling — second-chance retry on %s (recharged?)',
+            candidate.provider,
+          )
+          done()
+          return { kind: 'retry' }
+        }
+      }
+
       let downstream: RequestErrorAction | undefined
       try {
         downstream = await next()
@@ -359,43 +504,19 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
         done()
         return downstream
       }
-
-      let used = 1
-      if (stepKey === undefined) {
-        // Unkeyed agents cannot accumulate a budget; the pool bound still applies.
-        used = 1
-      } else {
-        used = (retryBudget.get(stepKey) ?? 0) + 1
-        retryBudget.set(stepKey, used)
-      }
-      if (retryBudget.size > 1000) retryBudget.clear()
-      if (used > group.entries.length) {
+      if (nextUp !== undefined) {
         ;(ctx as ListenerContext).logger?.warn?.(
           'model-failover: retry budget exhausted for %s after %d attempts — giving up to default handling',
           stepKey, used,
         )
-        done()
-        return downstream
-      }
-
-      const nextUp = firstHealthyEntry(group.entries, pool)
-      if (nextUp === undefined) {
+      } else {
         ;(ctx as ListenerContext).logger?.warn?.(
           'model-failover: %s failed (%s) and every account is cooling — giving up to default handling',
           failed.provider, klass,
         )
-        done()
-        return downstream
       }
-      ;(ctx as ListenerContext).logger?.info?.(
-        'model-failover: %s/%s failed (%s) → switching to %s/%s (cooldown %d min)',
-        failed.provider, failed.model,
-        klass,
-        nextUp.provider, nextUp.model,
-        Math.round(Math.max(cooldownMs, retryAfter) / 60_000),
-      )
       done()
-      return { kind: 'retry' }
+      return downstream
     } catch (error) {
       ;(ctx as ListenerContext).logger?.warn?.('model-failover: agent/request-error listener failed, passing through: %o', error)
       return next()

@@ -111,7 +111,7 @@ test('non-retryable failure passes through to downstream', async () => {
   assert.equal(action, 'downstream-decision')
 })
 
-test('all entries cooling → pass through untouched and surface default error handling', async () => {
+test('all entries cooling → second-chance revives the first cooled account (recharge probe)', async () => {
   const ctx = fakeCtx()
   const { pool } = apply(ctx, config)
   const agent = { id: 'a1' }
@@ -120,13 +120,40 @@ test('all entries cooling → pass through untouched and surface default error h
   const out = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
   assert.deepEqual({ provider: out.provider, model: out.model }, { provider: 'seed', model: 'seed-model' })
 
-  const action = await ctx.waterfall(
+  // 第一次全冷却失败：按替补顺序复活 glm-1 并重试（探测是否已充值）
+  const probe = await ctx.waterfall(
     'agent/request-error',
-    { agent, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
     () => 'default-error',
   )
-  assert.equal(action, 'default-error')
-  assert.ok(ctx.log.warn.some((line) => line.includes('every account is cooling')))
+  assert.deepEqual(probe, { kind: 'retry' })
+  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-1')))
+  // 复活后的请求会重新路由到 glm-1
+  const rerouted = await ctx.waterfall('agent/request', { agent, turn: 1, step: 2 }, () => seedConfig)
+  assert.equal(rerouted.provider, 'glm-1')
+
+  // glm-1 仍无额度再次失败 → 重新冷却；二次机会转向下一个账号（glm-1 已被节流）
+  const probe2 = await ctx.waterfall(
+    'agent/request-error',
+    { agent, turn: 1, step: 2, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    () => 'default-error',
+  )
+  assert.deepEqual(probe2, { kind: 'retry' })
+  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-2')))
+
+  // 持续失败：每个账号每 5 分钟只探测一次，节流耗尽后交回默认错误处理
+  let giveUp
+  for (let i = 3; i < 9; i += 1) {
+    const provider = config.groups[0].entries[(i - 1) % 3].provider
+    giveUp = await ctx.waterfall(
+      'agent/request-error',
+      { agent, turn: 1, step: i, provider, failure: { code: 'QUOTA' } },
+      () => 'default-error',
+    )
+    if (giveUp === 'default-error') break
+  }
+  assert.equal(giveUp, 'default-error')
+  assert.ok(ctx.log.warn.some((line) => line.includes('every account is cooling') || line.includes('retry budget exhausted')))
 })
 
 test('cascades through the whole pool one failure at a time', async () => {
@@ -143,7 +170,11 @@ test('cascades through the whole pool one failure at a time', async () => {
       () => 'default-error',
     )
     if (i < 2) assert.deepEqual(action, { kind: 'retry' })
-    else assert.equal(action, 'default-error')
+    else {
+      // 第三个账号失败后全池冷却：二次机会复活链首（可能已被充值）
+      assert.deepEqual(action, { kind: 'retry' })
+      assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-1')))
+    }
   }
   assert.deepEqual(seen, ['glm-1', 'glm-2', 'glm-3'])
 })
@@ -289,4 +320,67 @@ test('listener throwing inside agent/request does not swallow routing', async ()
   ctx.on('agent/request', async () => { throw new Error('boom') })
   apply(ctx, config)
   await assert.rejects(() => ctx.waterfall('agent/request', { agent: { id: 'a' } }, () => seedConfig), /boom/)
+})
+
+test('GLM 1310 weekly-cap failure classifies as quota and yields a long cooldown', () => {
+  const klass = classifyFailure({ code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-05 17:10:49 后可继续使用。"}' })
+  assert.ok(klass === 'quota' || klass === 'rate-limit')
+})
+
+test('numeric-string codes map like HTTP statuses', () => {
+  assert.equal(classifyFailure({ code: '429', message: 'x' }), 'rate-limit')
+  assert.equal(classifyFailure({ code: '402', message: 'x' }), 'quota')
+  assert.equal(classifyFailure({ code: '401', message: 'x' }), 'auth')
+})
+
+test('Chinese usage-cap message classifies as quota', () => {
+  assert.equal(classifyFailure({ code: 'PROVIDER_ERROR', message: '已达到 7 天使用上限' }), 'quota')
+})
+
+test('retryAfterFromMessage parses the resume timestamp', () => {
+  const now = Date.parse('2026-10-31T16:00:00')
+  const ms = mod.retryAfterFromMessage('已达到 7 天使用上限，2026-11-05 17:10:49 后可继续使用。', now)
+  const expected = Date.parse('2026-11-05T17:10:49') - now
+  assert.equal(ms, expected)
+  assert.equal(mod.retryAfterFromMessage('no date here', now), 0)
+})
+
+test('exhausted group without catalog passes through untouched', async () => {
+  const ctx = fakeCtx()
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  const stop = apply(ctx, {
+    groups: [{ id: 'g', entries: [{ provider: 'a', model: 'm1' }, { provider: 'b', model: 'm2' }] }],
+    activeGroup: 'g',
+  }, { pool, now: () => 1_000 })
+  pool.cool('a'); pool.cool('b')
+  const resolved = await ctx.waterfall('agent/request', {}, async () => ({ provider: 'a', model: 'm1', maxTokens: 100 }))
+  assert.equal(resolved.provider, 'a')
+})
+
+test('exhausted group falls back to a healthy catalog provider', async () => {
+  const ctx = fakeCtx()
+  ctx.llm = {
+    listProviders: () => [{ id: 'deepseek-official' }, { id: 'glm-x' }, { id: 'a' }, { id: 'b' }],
+    listModels: async (p) => [{ id: p === 'deepseek-official' ? 'deepseek-chat' : 'm1' }],
+  }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  const stop = apply(ctx, {
+    groups: [{ id: 'g', entries: [{ provider: 'a', model: 'm1' }, { provider: 'b', model: 'm2' }] }],
+    activeGroup: 'g',
+  }, { pool, now: () => 1_000 })
+  await new Promise((r) => setTimeout(r, 10)) // let auto-discovery settle
+  pool.cool('a'); pool.cool('b')
+  const resolved = await ctx.waterfall('agent/request', { agent: { id: 'x' } }, async () => ({ provider: 'a', model: 'm1', maxTokens: 100 }))
+  assert.equal(resolved.provider, 'deepseek-official')
+  assert.equal(resolved.model, 'deepseek-chat')
+  // 失败后 error 监听器应继续走兜底重试
+  const action = await ctx.waterfall('agent/request-error',
+    { agent: { id: 'x' }, turn: 1, step: 1, provider: 'deepseek-official', failure: { code: 'RATE_LIMIT' } },
+    () => undefined)
+  assert.equal(action?.kind, 'retry')
+  // 兜底也有自己的预算：连续第 3 次兜底跳数后放弃
+  const action2 = await ctx.waterfall('agent/request-error',
+    { agent: { id: 'x' }, turn: 1, step: 1, provider: 'glm-x', failure: { code: 'RATE_LIMIT' } },
+    () => undefined)
+  assert.equal(action2, undefined)
 })

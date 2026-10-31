@@ -29,7 +29,8 @@
 - 大陆网络推荐 SSH 形式（`git@github.com:...`）：安装预检与克隆都走 SSH 密钥，不依赖代理。HTTPS 形式在直连被墙且无代理时会超时失败。
 - 中国大陆用户可在安装引导中选择 npmmirror 镜像源，依赖（`@deepseek-ai/schemastery`）会从镜像拉取。
 - 通过 GitHub 安装的插件更新方式：先卸载再安装新版。
-- **v0.3.0 起带 GUI**：设置 → 插件 页面出现 "Model Failover 模型替补" 卡片，可直接编辑替补分组/条目顺序/冷却时长/触发类别，保存即时生效；也可继续手改 `cordis.patch.yml`。运行状态看 DSH 日志中 `model-failover:` 前缀的行。
+- **v0.3.0 起带 GUI**：设置 → 插件 页面出现 "Model Failover 模型替补" 卡片，可直接编辑替补分组/条目顺序/冷却时长/触发类别，保存即时生效；也可继续手改 `cordis.patch.yml`。
+- **多账号（v0.6.0）**：卡片直接识别系统已配置的供应商；点「复制」只需填一把新 API Key，即为同一供应商加一个账号（如 GLM × 3）。Key 写入 DSH 加密凭据库，配置克隆自动完成，副本自动插到替补链原账号之后；支持换 Key 与删除。纯通用 RPC（`settings.mutate` / `credentials.set`），DSH 升级不易破坏。运行状态看 DSH 日志中 `model-failover:` 前缀的行。
 - 安装后把账号池配置写进 `cordis.patch.yml`（patch 层配置在 DSH 升级后保留），并重启或重载插件。
 - 插件配置键为 `model-failover`（cordis 插件名），与包名 `dsh-model-failover` 略有不同，属正常现象。
 
