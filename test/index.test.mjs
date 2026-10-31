@@ -391,7 +391,7 @@ test('switch records land in the plugin log and session event', async () => {
   const events = []
   const logFile = '/tmp/mf-switches-test.log'
   fs.rmSync(logFile, { force: true })
-  const agent = { id: 'a1', session: { append: (type, data) => events.push([type, data]) } }
+  const agent = { id: 'a1', session: { append: (type, data) => events.push([type, data]) } } // the dsh-session stub's appendPluginRecord forwards to session.append
   apply(ctx, config, { logFile, now: () => 1_000 })
   // glm-1 失败 → 切 glm-2，应产生记录
   const action = await ctx.waterfall('agent/request-error',
@@ -404,7 +404,7 @@ test('switch records land in the plugin log and session event', async () => {
   assert.equal(record.from, 'glm-1')
   assert.equal(record.to, 'glm-2')
   assert.equal(record.via, 'chain')
-  const sessionEvent = events.find(([type]) => type === 'model-failover/switch')
+  const sessionEvent = events.find(([type]) => type === 'plugin:model-failover/switch')
   assert.ok(sessionEvent, 'session event appended')
   assert.equal(sessionEvent[1].to, 'glm-2')
   fs.rmSync(logFile, { force: true })

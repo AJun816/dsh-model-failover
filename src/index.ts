@@ -277,17 +277,58 @@ function reroute(resolved: LlmCallConfig, selected: FailoverEntry): LlmCallConfi
 }
 
 /**
+ * The session-record type for one failover switch. Plugin-authored records must
+ * follow the official `plugin:` grammar (`plugin:` + lowercase slash-separated
+ * segments) and are written through `appendPluginRecord`, which stamps the
+ * envelope's `ignorable: true` marker so every harness build — including ones
+ * that do not know the type — can keep reading the log. A plain
+ * `session.append('model-failover/switch', …)` writes a REQUIRED unknown event
+ * that the persistence reader refuses with "unknown to this harness and not
+ * marked ignorable", breaking history load for that session.
+ */
+const SWITCH_RECORD_TYPE = 'plugin:model-failover/switch'
+
+/** The official `appendPluginRecord(session, type, data)` writer from the host. */
+type PluginRecordWriter = (session: unknown, type: string, data: unknown) => unknown
+
+/** Lazily resolved and cached: the writer once found, undefined when unavailable. */
+let pluginRecordWriter: PluginRecordWriter | undefined
+let pluginRecordWriterResolved = false
+
+async function resolvePluginRecordWriter(): Promise<PluginRecordWriter | undefined> {
+  if (pluginRecordWriterResolved) return pluginRecordWriter
+  pluginRecordWriterResolved = true
+  try {
+    // Runtime lookup of the in-process host module (the same modules sibling
+    // plugins like dsh-web-search-zhipu import statically). The computed
+    // specifier keeps this build dependency-free; when the channel is missing
+    // (older host, plain-node tests without the stub) we simply skip it.
+    const specifier = '@deepseek-ai/dsh-session'
+    const mod = await import(specifier) as { appendPluginRecord?: PluginRecordWriter }
+    if (typeof mod.appendPluginRecord === 'function') pluginRecordWriter = mod.appendPluginRecord
+  } catch { /* best effort */ }
+  return pluginRecordWriter
+}
+
+/**
  * Record one failover switch through every official channel:
- *  - a session event (`model-failover/switch`) in the turn's transcript log;
+ *  - a plugin record (`plugin:model-failover/switch`, ignorable) in the turn's
+ *    transcript log via `appendPluginRecord` — the only supported way for a
+ *    plugin to add a session event;
  *  - a JSONL line in the plugin's own switch log;
  *  - the `lastSwitches` advisory field in our settings namespace, which the
  *    GUI card renders as a notice banner.
  * Each channel is individually optional; a failure in one never blocks the others.
  */
-async function recordSwitch(ctx: ListenerContext, payload: WaterfallPayload & { agent?: { session?: { append?: (type: string, data: unknown) => unknown } } }, record: SwitchRecord, logFile: string | undefined): Promise<void> {
-  // 1) session transcript event (same channel llm-retry uses)
+async function recordSwitch(ctx: ListenerContext, payload: WaterfallPayload & { agent?: { session?: unknown } }, record: SwitchRecord, logFile: string | undefined): Promise<void> {
+  // 1) session transcript plugin record (official ignorable channel; llm-retry's
+  //    `session.append` path is reserved for harness-known event types)
   try {
-    payload.agent?.session?.append?.('model-failover/switch', record)
+    const session = payload.agent?.session
+    if (session !== undefined) {
+      const write = await resolvePluginRecordWriter()
+      write?.(session, SWITCH_RECORD_TYPE, record)
+    }
   } catch { /* best effort */ }
   // 2) plugin file log (types-free dynamic import keeps the build independent of @types/node)
   if (logFile !== undefined) {
