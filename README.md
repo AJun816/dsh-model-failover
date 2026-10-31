@@ -19,14 +19,14 @@
 
 | 安装源 | 输入内容 | 说明 |
 |---|---|---|
-| GitHub SSH（推荐） | `git@github.com:AJun816/dsh-model-failover.git` | 走 SSH 免密，大陆网络无代理也稳定 |
-| GitHub HTTPS | `https://github.com/AJun816/dsh-model-failover` | 需网络能直连 GitHub（或系统代理开启） |
+| GitHub HTTPS（推荐） | `https://github.com/AJun816/dsh-model-failover` | 任何能访问 GitHub 的网络均可 |
+| GitHub SSH | `git+ssh://git@github.com/AJun816/dsh-model-failover.git` | 走 SSH 免密，大陆网络无代理也稳定 |
 | npm 包名 | `dsh-model-failover` | 需先发布到 npm（或镜像源同步后） |
 | 本地目录 | `~/projects/dsh-model-failover` | 开发调试用，必须是绝对路径 |
 
 安装说明：
 
-- 大陆网络推荐 SSH 形式（`git@github.com:...`）：安装预检与克隆都走 SSH 密钥，不依赖代理。HTTPS 形式在直连被墙且无代理时会超时失败。
+- 大陆网络推荐 SSH 形式（`git+ssh://git@github.com/AJun816/dsh-model-failover.git`）：克隆走 SSH 密钥，不依赖代理。注意不要用 `git@github.com:...` 简写 —— pnpm 会把它误解析成名为 "git" 的本地 link 依赖而安装失败。HTTPS 形式在直连受限且无代理时会超时失败。
 - 中国大陆用户可在安装引导中选择 npmmirror 镜像源，依赖（`@deepseek-ai/schemastery`）会从镜像拉取。
 - 通过 GitHub 安装的插件更新方式：先卸载再安装新版。
 - **v0.3.0 起带 GUI**：设置 → 插件 页面出现 "Model Failover 模型替补" 卡片，可直接编辑替补分组/条目顺序/冷却时长/触发类别，保存即时生效；也可继续手改 `cordis.patch.yml`。
