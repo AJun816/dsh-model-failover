@@ -55,6 +55,8 @@ export interface Config {
   autoDiscover?: boolean
   /** When true (default), an exhausted group falls back to any other healthy configured provider so the task never stops. */
   fallbackToCatalog?: boolean
+  /** Provider-name patterns excluded from the auto chain and catalog fallback (e.g. protocol-blocked reverse-engineered channels). Exact id, or prefix with trailing *. */
+  catalogExclude?: string[]
   /** Recent switch records the GUI card surfaces as a notice (host-written, advisory). */
   lastSwitches?: SwitchRecord[]
 }
@@ -84,6 +86,7 @@ export const Config: z<Config> = z.object({
   retryOn: z.array(z.string()).default(['quota', 'rate-limit', 'auth', 'network']).volatile(),
   autoDiscover: z.boolean().default(true).volatile(),
   fallbackToCatalog: z.boolean().default(true).volatile(),
+  catalogExclude: z.array(z.string()).default([]).volatile(),
   lastSwitches: z.array(z.object({
     at: z.number().required(),
     from: z.string().required(),
@@ -109,6 +112,10 @@ const MESSAGE_CLASS: readonly (readonly [RegExp, FailureClass])[] = [
   [/insufficient\s+balance|quota|额度|余额|使用上限|usage\s*limit/i, 'quota'],
   [/rate\s*limit|too many requests|限流|请求过于频繁|稍后(再试|重试)/i, 'rate-limit'],
   [/invalid\s+api\s*key|unauthorized|forbidden|authentication/i, 'auth'],
+  // Channel verification blocks (WorkBuddy-style reverse-engineered upstreams:
+  // HTTP 400 code 11128 "Illegal API invocation from an unapproved channel",
+  // retry:false). Auth-class so the provider is cooled down and skipped.
+  [/unapproved\s+channel|illegal\s+api\s+invocation/i, 'auth'],
   [/network|econnreset|econnrefused|etimedout|fetch failed|timeout|overload|服务繁忙/i, 'network'],
 ]
 
@@ -132,6 +139,27 @@ const STATUS_CLASS: ReadonlyMap<number, FailureClass> = new Map([
 
 /** Neutral LlmCallConfig fields safe to keep when the provider changes. */
 const NEUTRAL_FIELDS = ['maxTokens', 'temperature'] as const
+
+/**
+ * True when a provider id matches a catalogExclude pattern. A pattern is an
+ * exact id ("workbuddy-ai") or a prefix wildcard ("workbuddy-*"); empty and
+ * malformed patterns never match.
+ */
+export function providerExcluded(patterns: readonly unknown[], provider: string): boolean {
+  if (!Array.isArray(patterns)) return false
+  for (const raw of patterns) {
+    if (typeof raw !== 'string' || raw.length === 0) continue
+    const pattern = raw.trim()
+    if (pattern.length === 0) continue
+    if (pattern.endsWith('*')) {
+      const prefix = pattern.slice(0, -1)
+      if (provider.startsWith(prefix)) return true
+    } else if (provider === pattern) {
+      return true
+    }
+  }
+  return false
+}
 
 /**
  * Classify an LlmFailure into one of the failure classes. Code wins, message
@@ -461,9 +489,14 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
   const llm = (ctx as ListenerContext).llm
   const refreshAuto = async (): Promise<void> => {
     if (llm === undefined) return
+    const excludedNow = stringListOf(config.catalogExclude)
+    if (excludedNow.length > 0) {
+      ;(ctx as ListenerContext).logger?.info?.(`model-failover: catalog fallback excludes ${excludedNow.join(', ')}`)
+    }
     try {
       const entries: FailoverEntry[] = []
       for (const provider of llm.listProviders()) {
+        if (providerExcluded(excludedNow, provider.id)) continue
         try {
           const models = await llm.listModels(provider.id)
           const first = models[0]
@@ -484,6 +517,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
    * the pool's cooling state deliberately survives re-wiring.
    */
   const wire = (): (() => void) => {
+    const excluded = stringListOf(config.catalogExclude)
     const cooldownMs = numberOr(config.cooldownMinutes, 30) * 60_000
     const retryOn = new Set(stringListOf(config.retryOn).length > 0 ? stringListOf(config.retryOn) : ['quota', 'rate-limit', 'auth', 'network'])
     const autoOn = boolOf(config.autoDiscover, true)
@@ -492,7 +526,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     const fallbackEntry = (): FailoverEntry | undefined => {
       if (!fallbackOn || group === undefined) return undefined
       const inGroup = new Set(group.entries.map((entry) => entry.provider))
-      return autoEntries.find((entry) => !inGroup.has(entry.provider) && !pool.isCooling(entry.provider))
+      return autoEntries.find((entry) => !inGroup.has(entry.provider) && !pool.isCooling(entry.provider) && !providerExcluded(excluded, entry.provider))
     }
 
     const groupsRaw = valueOf<FailoverGroup[]>(config.groups)

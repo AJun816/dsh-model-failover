@@ -13,6 +13,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.2] — 2026-11-01
+
+### Added — 渠道封禁防线（WorkBuddy 11128 事故）
+- `catalogExclude` 配置：按精确 id 或 `前缀*` 通配把 provider 从自动链与目录兜底中排除——协议级被封的逆向渠道（如 dsh-workmate 的 workbuddy-*，服务端 11128 "Illegal API invocation from an unapproved channel"）不再被兜底选中。
+- 分类器：`unapproved channel` / `illegal api invocation` 消息归为 `auth` 类——渠道被封的 provider 会进入冷却并被跳过，而不是归为 other 每轮重撞。
+- 测试 +2（含真实 11128 报错串分类、排除匹配边界），30/30。
+
 ## [0.9.1] — 2026-11-01
 
 ### Changed — 拆分：dsh-glm-suite 独立成仓

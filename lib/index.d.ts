@@ -51,6 +51,8 @@ export interface Config {
     autoDiscover?: boolean;
     /** When true (default), an exhausted group falls back to any other healthy configured provider so the task never stops. */
     fallbackToCatalog?: boolean;
+    /** Provider-name patterns excluded from the auto chain and catalog fallback (e.g. protocol-blocked reverse-engineered channels). Exact id, or prefix with trailing *. */
+    catalogExclude?: string[];
     /** Recent switch records the GUI card surfaces as a notice (host-written, advisory). */
     lastSwitches?: SwitchRecord[];
 }
@@ -74,6 +76,12 @@ export type FailureClass = typeof FAILURE_CLASSES[number];
  * (weekly/period usage caps) into remaining milliseconds. Local time assumed.
  */
 export declare function retryAfterFromMessage(message: string | null | undefined, now?: number): number;
+/**
+ * True when a provider id matches a catalogExclude pattern. A pattern is an
+ * exact id ("workbuddy-ai") or a prefix wildcard ("workbuddy-*"); empty and
+ * malformed patterns never match.
+ */
+export declare function providerExcluded(patterns: readonly unknown[], provider: string): boolean;
 /**
  * Classify an LlmFailure into one of the failure classes. Code wins, message
  * keywords and HTTP status follow.

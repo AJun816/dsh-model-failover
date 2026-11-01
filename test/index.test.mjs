@@ -63,6 +63,25 @@ test('classifyFailure maps codes, statuses, and messages', () => {
   assert.equal(classifyFailure(null), 'other')
 })
 
+test('classifyFailure treats channel-verification blocks (11128) as auth', () => {
+  // 实测：WorkBuddy 上游 HTTP 400 code 11128（dsh-workmate 渠道，retry:false）
+  const real = 'workbuddy-ai upstream client (http 400): {"code":11128,"msg":"Illegal API invocation from an unapproved channel","retry_policy":{"retry":false},"displayTips":{"en":"This call failed channel verification, possibly because it was not sent from an official client."}}'
+  assert.equal(classifyFailure({ message: real }), 'auth')
+  assert.equal(classifyFailure({ message: 'Request blocked: unapproved channel' }), 'auth')
+})
+
+test('providerExcluded matches exact ids and prefix wildcards only', () => {
+  const { providerExcluded } = mod
+  assert.equal(providerExcluded(['workbuddy-ai', 'workbuddy-cn'], 'workbuddy-ai'), true)
+  assert.equal(providerExcluded(['workbuddy-*'], 'workbuddy-cn'), true)
+  assert.equal(providerExcluded(['workbuddy-*'], 'workbuddy-ai'), true)
+  assert.equal(providerExcluded(['workbuddy-*'], 'deepseek-official'), false)
+  assert.equal(providerExcluded(['workbuddy-ai'], 'workbuddy-ai-2'), false) // 前缀≠精确
+  assert.equal(providerExcluded([], 'workbuddy-ai'), false)
+  assert.equal(providerExcluded(['', '  ', 42], 'workbuddy-ai'), false) // 畸形模式不匹配
+  assert.equal(providerExcluded(undefined, 'workbuddy-ai'), false)
+})
+
 test('pool cools and auto-recovers after cooldown', () => {
   let clock = 0
   const pool = createPool({ cooldownMs: 1000, now: () => clock })
