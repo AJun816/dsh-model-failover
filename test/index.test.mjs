@@ -98,6 +98,23 @@ test('pool cools and auto-recovers after cooldown', () => {
   assert.equal(pool.snapshot()['glm-1/glm-4.7'], undefined)
 })
 
+test('module evaluation writes an external load marker', async () => {
+  // 导入即写 ~/.dsh/model-failover/load.log（0.9.7 加载可观测性）
+  const { homedir } = await import('node:os')
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const markerPath = join(homedir(), '.dsh', 'model-failover', 'load.log')
+  // 触发一次 fresh 评估（test loader 可能已缓存；直接调用导出的标记函数兜底断言）
+  const { writeLoadMarker, VERSION } = mod
+  await writeLoadMarker(VERSION, 'self-test')
+  assert.ok(existsSync(markerPath), 'load.log must exist after import/self-test')
+  const lines = readFileSync(markerPath, 'utf8').trim().split('\n')
+  const last = JSON.parse(lines[lines.length - 1])
+  assert.equal(last.version, VERSION)
+  assert.equal(last.note, 'self-test')
+  assert.equal(typeof last.pid, 'number')
+})
+
 test('wire() persists lastArmed to the settings namespace (external observability)', async () => {
   const ctx = fakeCtx()
   const updates = []

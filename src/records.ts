@@ -120,6 +120,32 @@ async function recordToGuiNotice(ctx: ListenerContext, record: SwitchRecord): Pr
 }
 
 /**
+ * Append one line to $DSH_HOME/model-failover/load.log — external proof that
+ * this module was EVALUATED inside the host process (version + pid), and the
+ * only channel that also captures why apply()/wire() failed to arm. Writing
+ * is fire-and-forget and never throws into module evaluation.
+ */
+export async function writeLoadMarker(version: string, note?: string): Promise<void> {
+  try {
+    const osSpecifier = 'node:os'
+    const pathSpecifier = 'node:path'
+    const fsSpecifier = 'node:fs'
+    const processSpecifier = 'node:process'
+    const osMod = await import(osSpecifier) as { homedir?: () => string }
+    const pathMod = await import(pathSpecifier) as { join?: (...parts: string[]) => string }
+    const fsMod = await import(fsSpecifier) as { mkdirSync?: (p: string, o?: { recursive?: boolean }) => void, appendFileSync?: (p: string, d: string) => void }
+    const processMod = await import(processSpecifier) as { env?: Record<string, string | undefined>, pid?: number }
+    if (osMod.homedir === undefined || pathMod.join === undefined) return
+    const envHome = processMod.env?.DSH_HOME
+    const home = (envHome !== undefined && envHome.trim() !== '' ? envHome : undefined) ?? osMod.homedir() + '/.dsh'
+    const dir = pathMod.join(home, 'model-failover')
+    fsMod.mkdirSync?.(dir, { recursive: true })
+    const at = new Date().toISOString()
+    fsMod.appendFileSync?.(pathMod.join(dir, 'load.log'), JSON.stringify({ at, pid: processMod.pid, version, ...(note !== undefined ? { note } : {}) }) + '\n')
+  } catch { /* never break module evaluation or plugin loading */ }
+}
+
+/**
  * Persist the armed-state snapshot into the settings namespace so the running
  * plugin's status is observable WITHOUT host stdout (the heartbeat log line is
  * invisible to external tooling; this field is readable from the config

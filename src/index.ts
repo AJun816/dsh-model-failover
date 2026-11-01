@@ -32,13 +32,18 @@ import type {
 } from './types.js'
 import { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
 import { createPool, firstHealthyEntry } from './pool.js'
-import { recordArmed, recordSwitch } from './records.js'
+import { recordArmed, recordSwitch, writeLoadMarker } from './records.js'
 import { activeGroupOf, Config as ConfigBinding } from './config.js'
 import { VERSION } from './version.js'
 import { boolOf, finiteOr, stringListOf, valueOf } from './coerce.js'
 
 export const name = 'model-failover'
 export const inject = ['llm']
+
+// External load proof: one line per process that evaluated this module.
+// If the host loads this plugin, ~/.dsh/model-failover/load.log shows it even
+// when apply() later fails or the host stdout is unreachable.
+void writeLoadMarker(VERSION)
 
 // ---- Public surface (kept stable for the loader, GUI card and tests) ----
 export { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
@@ -351,10 +356,22 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     }
   }
 
+  // Wire failures are captured to load.log before propagating: a plugin that
+  // fails to arm must leave an external trace instead of vanishing into host
+  // stdout (the 2026-11-01 blind-spot postmortem).
+  const guardedWire = (): (() => void) => {
+    try {
+      return wire()
+    } catch (error) {
+      void writeLoadMarker(VERSION, 'wire failed: ' + String((error as Error)?.message ?? error))
+      throw error
+    }
+  }
+
   if (typeof ctx.effect === 'function') {
-    ctx.effect(wire, 'model-failover: volatile config wiring')
+    ctx.effect(guardedWire, 'model-failover: volatile config wiring')
   } else {
-    wire()
+    guardedWire()
   }
   return { pool }
 }

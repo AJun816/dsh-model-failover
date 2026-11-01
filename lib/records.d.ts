@@ -17,6 +17,13 @@ export interface ArmedState {
     note?: string;
 }
 /**
+ * Append one line to $DSH_HOME/model-failover/load.log — external proof that
+ * this module was EVALUATED inside the host process (version + pid), and the
+ * only channel that also captures why apply()/wire() failed to arm. Writing
+ * is fire-and-forget and never throws into module evaluation.
+ */
+export declare function writeLoadMarker(version: string, note?: string): Promise<void>;
+/**
  * Persist the armed-state snapshot into the settings namespace so the running
  * plugin's status is observable WITHOUT host stdout (the heartbeat log line is
  * invisible to external tooling; this field is readable from the config

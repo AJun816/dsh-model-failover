@@ -13,6 +13,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.7] — 2026-11-01
+
+### Added — 加载可观测性硬化（排障盲区终局）
+- 模块求值标记：宿主每次加载本插件，`~/.dsh/model-failover/load.log` 追加一行（时间/pid/版本）——"宿主到底有没有加载"从此外部可判，不依赖 GUI 日志面板。
+- wire() 异常外泄：装配失败先写 load.log（含原因）再抛——armed 失败不再无声消失。
+- 修正认知：dsh-scope 的 scopeTarget 对**无标签监听器全局放行**（源码注释 "admits untagged listeners globally"）——此前"子代理请求绕过根级监听器"的假设不成立，作用域接管方案撤销。
+
 ## [0.9.6] — 2026-11-01
 
 ### Added — armed 状态外部可观测
