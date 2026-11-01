@@ -365,6 +365,28 @@ test('retryAfterFromMessage parses the resume timestamp', () => {
   assert.equal(mod.retryAfterFromMessage('no date here', now), 0)
 })
 
+test('v0.9.3 default: catalog fallback is OFF — requests never leave the configured chain', async () => {
+  // 事故回归（2026-11-01 21:55）：deepseek quota 后旧默认把请求兜底进
+  // workbuddy-*（服务端 11128 渠道封禁）。新默认：不 opt-in 就不出组。
+  const ctx = fakeCtx()
+  ctx.llm = {
+    listProviders: () => [{ id: 'workbuddy-ai' }, { id: 'workbuddy-cn' }, { id: 'a' }, { id: 'b' }],
+    listModels: async () => [{ id: 'm1' }],
+  }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, {
+    groups: [{ id: 'g', entries: [{ provider: 'a', model: 'm1' }, { provider: 'b', model: 'm2' }] }],
+    activeGroup: 'g',
+    // 注意：没有 fallbackToCatalog —— 默认必须为 false
+  }, { pool, now: () => 1_000 })
+  await new Promise((r) => setTimeout(r, 10))
+  pool.cool('a'); pool.cool('b')
+  const resolved = await ctx.waterfall('agent/request', { agent: { id: 'x' } }, async () => ({ provider: 'a', model: 'm1' }))
+  assert.equal(resolved.provider, 'a') // 原样透传，绝不去 workbuddy-*
+  assert.notEqual(resolved.provider, 'workbuddy-ai')
+  assert.notEqual(resolved.provider, 'workbuddy-cn')
+})
+
 test('exhausted group without catalog passes through untouched', async () => {
   const ctx = fakeCtx()
   const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
@@ -387,6 +409,7 @@ test('exhausted group falls back to a healthy catalog provider', async () => {
   const stop = apply(ctx, {
     groups: [{ id: 'g', entries: [{ provider: 'a', model: 'm1' }, { provider: 'b', model: 'm2' }] }],
     activeGroup: 'g',
+    fallbackToCatalog: true, // v0.9.3 起目录兜底为显式 opt-in
   }, { pool, now: () => 1_000 })
   await new Promise((r) => setTimeout(r, 10)) // let auto-discovery settle
   pool.cool('a'); pool.cool('b')
@@ -433,10 +456,17 @@ test('compiled output never writes required session events directly', () => {
   // The v0.8.0 bug class: calling the plain required-event append channel with
   // a custom type writes a log the persistence reader refuses to load. This
   // guard fails the build if anyone ever reintroduces that call pattern.
-  const lib = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
-  assert.equal((lib.match(/session\s*\.\s*append\s*\(/g) ?? []).length, 0,
+  // Scans EVERY compiled host file — the record code lives in lib/records.js
+  // since the v0.9.3 module split.
+  const libDir = new URL('../lib/', import.meta.url)
+  const compiled = fs.readdirSync(libDir)
+    .filter((f) => f.endsWith('.js') && f !== 'client.js')
+    .map((f) => fs.readFileSync(new URL(f, libDir), 'utf8'))
+    .join('\n')
+  assert.ok(compiled.length > 0, 'compiled host output must exist')
+  assert.equal((compiled.match(/session\s*\.\s*append\s*\(/g) ?? []).length, 0,
     'session records must only be written through appendPluginRecord')
-  assert.ok(lib.includes("SWITCH_RECORD_TYPE = 'plugin:model-failover/switch'"),
+  assert.ok(compiled.includes("SWITCH_RECORD_TYPE = 'plugin:model-failover/switch'"),
     'the record type must follow the plugin: grammar')
 })
 

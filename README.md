@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-4D6BFE.svg?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.2-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.3-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
 
 > **DeepSeek Harness（DSH）多供应商 / 多账号模型自动替补插件** —— 额度用尽、限流、鉴权失败时自动切换到下一个账号，任务不中断。零第三方运行时依赖，全程防御式降级：插件任何异常都等价于未安装。
 
@@ -18,7 +18,7 @@
 - 🧭 **自动模式**：不配置任何分组时，自动把系统里已配置的全部 provider 组成替补链（注册顺序）
 - 🧊 **账号级冷却**：默认 30 分钟自动恢复；供应商返回更长 Retry-After 时按更长者；冷却跨会话共享
 - 🛡️ **重试风暴防护**：同一 turn/step 的替补跳数以组大小为上限；全员冷却时做 5 分钟节流的"二次机会"探测（可能已充值）
-- 🎯 **目录兜底**：组内账号耗尽时，可回退到组外任一健康 provider（`fallbackToCatalog`，默认开）；`catalogExclude` 可把协议级死渠道挡在链外（v0.9.2）
+- 🎯 **目录兜底（默认关）**：`fallbackToCatalog` 显式开启后，组内耗尽才回退到组外健康 provider；`catalogExclude` 进一步排除协议级死渠道（v0.9.2/0.9.3）——**配置的链就是权威边界，不 opt-in 绝不出组**
 - 🖼️ **GUI 卡片**：设置 → 插件 → "Model Failover 模型替补"，可视化编辑分组/顺序/冷却/触发类别，一键"复制"为同供应商加账号（Key 进 DSH 加密凭据库），最近切换横幅
 - 📡 **可观测**：DSH 日志 `model-failover:` 前缀行、插件目录 `switches.log`（JSONL）、会话记录（`plugin:model-failover/switch`，官方 ignorable 通道）、卡片横幅
 - 🪶 **近零依赖**：运行时仅 `@deepseek-ai/schemastery`；只使用 DSH 公开插件契约
@@ -74,7 +74,7 @@ model-failover:
 | `cooldownMinutes` | number | `30` | 账号冷却分钟数（供应商 Retry-After 更长时按更长者） |
 | `retryOn` | string[] | `[quota, rate-limit, auth, network]` | 触发切换的错误类别；其他错误保持 DSH 原生行为 |
 | `autoDiscover` | boolean | `true` | 无分组时自动把已配置 provider 组成替补链 |
-| `fallbackToCatalog` | boolean | `true` | 组内耗尽时回退到组外任一健康 provider |
+| `fallbackToCatalog` | boolean | `false` | **v0.9.3 起默认关**：显式开启后，组内耗尽才回退到组外健康 provider（排除 `catalogExclude` 命中项）。此前默认开导致过请求被兜底进未配置渠道的事故 |
 | `catalogExclude` | string[] | `[]` | 从自动链与目录兜底中排除的 provider 名（精确 id 或 `前缀*` 通配）。用于把协议级被封的逆向渠道（如 WorkBuddy 11128 unapproved channel）挡在链外 |
 | `lastSwitches` | record[] | `[]` | 最近切换记录（宿主写入、卡片展示，勿手改） |
 

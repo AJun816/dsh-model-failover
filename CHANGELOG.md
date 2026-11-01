@@ -13,6 +13,18 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.3] — 2026-11-01
+
+### Changed — 配置链是权威边界（语义修正）
+- **`fallbackToCatalog` 默认值 true → false**。事故复盘（21:55）：deepseek 配额耗尽后，旧默认把请求兜底进用户从未配置的 workbuddy-* 渠道，撞上服务端 11128 渠道封禁。新语义：**不显式 opt-in，请求绝不离开配置的链**；需要跨组兜底的用户在配置里写 `fallbackToCatalog: true`（配合 `catalogExclude` 排除死渠道）。
+- 新增事故回归测试：默认关闭时组内全冷却 → 原样透传，绝不去组外 provider。
+
+### Changed — 代码整洁之道重构（行为保持）
+- 717 行单文件拆为七模块：`types.ts`（契约）/ `coerce.ts`（配置读取）/ `classifier.ts`（失败分类）/ `pool.ts`（冷却池）/ `records.ts`（切换记录三通道）/ `config.ts`（schema+分组）/ `index.ts`（瀑布装配）。
+- 提取小函数：`agentKeyOf`/`createBudgets`/`createFlightTracker`/`startAutoDiscovery`/`reroute`；魔数集中为命名常量（REVIVE_INTERVAL_MS/IN_FLIGHT_CAP/BUDGET_CAP/FALLBACK_HOPS_PER_STEP）。
+- 守卫测试升级为扫描全部编译产物（模块拆分后记录代码在 lib/records.js）。
+- 预算消耗时序、冷却 extend-only、revive 语义与原实现逐字对齐（重构期间发现并纠正了两处凭记忆造成的偏差）。
+
 ## [0.9.2] — 2026-11-01
 
 ### Added — 渠道封禁防线（WorkBuddy 11128 事故）
