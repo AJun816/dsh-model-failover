@@ -224,3 +224,31 @@
 |---|---|---|---|---|
 | E1 | pnpm `file:` 依赖为拷贝而非链接：首轮 install 后的源码修复（index.js 移除 installSection）未进 profile node_modules；二轮 install 因 npmmirror 拉可选原生依赖失败未刷新拷贝 | 拷贝语义 + 镜像源抖动掩盖静默不更新 | 1（2026-11-01，验收 A2 首查命中） | 固化为断言 A2：每次 install/改码后 cmp 10 文件字节一致；遗留风险：未来任何 pnpm install 后需复查 |
 
+
+## 9. 联网校验与优化轮（2026-11-01 21:00，glm-suite 0.2.1）
+
+### 9.1 线上取证（全部带源）
+
+| 来源 | 结论 | 对本插件的影响 |
+|---|---|---|
+| [zhipu_plan_tools issues](https://github.com/magian1127/deepseek-harness-zhipu_plan_tools/issues) / [dsh-web-search-zai issues](https://github.com/kenny2077/dsh-web-search-zai/issues) | 两仓库均 0 公开 issue（无已知坑可抄） | 无 |
+| [zhipu_plan_tools behavior.md](https://github.com/magian1127/deepseek-harness-zhipu_plan_tools/blob/main/docs/behavior.md) | 上游单查询硬上限 10 条；settings.yaml 命名空间已退役（0.1.7+ 走行 config）；它们的 web_search 阴影描述替换与极简预设 deny | 本插件靠缝截断语义等价；无 settings 段与现行架构一致；不替换工具描述=保守差异（可接受） |
+| [使用须知](https://docs.bigmodel.cn/cn/coding-plan/usage-notes.md) | 并发按套餐档动态；倒卖/中转/套利才永久封禁；3 次违规风控 | 视觉工具并发可能 1302，由池 60s 冷却+轮换兜底（已实现）；合规提示已在 README |
+| app-boot composeEntries 实证（本地源码运行） | 同名 insert 不合并、不告警，双行双加载 | 关键架构约束：bundles 只能保留 root（README 已警示） |
+
+### 9.2 代码审计发现与处置
+
+| 编号 | 问题 | 等级 | 处置 |
+|---|---|---|---|
+| F1 | searchMcpURL/readerMcpURL/zreadMcpURL 是死配置（RemoteMcp 硬编码 URL） | 真 bug | 已修 0.2.1：URL 变更自动重建客户端（url getter + ensureMcp） |
+| F2 | profile 双源不一致（failover 指 0.8.4 旧拷贝）+ 双 bundle 重复行风险 | 真 bug（组态） | 已修：双插件指仓库正本、bundles 只留 root、旧目录已删 |
+| F5 | 本地兜底把二进制当文本返回乱码 | 缺陷 | 已修：非文本 content-type 报 WEB_FETCH_UNSUPPORTED |
+| F7 | SETTINGS_NAMESPACE 死代码 | 卫生 | 已删 |
+| F10 | failover armed 可观测（记忆教训） | 非问题 | src 已有 active group 启动心跳（L509），无需改 |
+| O1 | 视觉并发同 key 可能 1302 | 优化项 | 接受：池冷却+轮换已兜底，串行化收益小 |
+| O2 | 轮换后旧会话未发 DELETE | 优化项 | 接受：服务端会话自然过期 |
+| O3 | vision timeoutMs 注册时固化 | 优化项 | 接受：契约为静态值，重载即更新 |
+
+### 9.3 修复后验证（全绿）
+
+GLM CMP 11/11 + FAILOVER CMP 4/4（E1 卫士，本轮第 3 次命中后 rm+重装再物化）；单测 9/9；apply 集成 10/10；视觉真调 PASS（13.9s 太浩湖描述）；仓库 failover 套件 28/28。

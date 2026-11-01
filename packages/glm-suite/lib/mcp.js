@@ -83,10 +83,15 @@ export class RemoteMcp {
   /** @type {Map<string, string>} apiKey → mcp-session-id */
   #sessions = new Map()
 
-  constructor(url, { userAgent = 'dsh-glm-suite/0.2.0', timeoutMs = 60_000 } = {}) {
+  constructor(url, { userAgent = 'dsh-glm-suite/0.2.1', timeoutMs = 60_000 } = {}) {
     this.#url = url
     this.#userAgent = userAgent
     this.#timeoutMs = timeoutMs
+  }
+
+  /** 当前端点 URL（供调用方检测配置变更后重建客户端）。 */
+  get url() {
+    return this.#url
   }
 
   /** 一次 JSON-RPC POST。 */

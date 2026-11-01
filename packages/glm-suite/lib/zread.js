@@ -105,7 +105,14 @@ export function zreadToolSpecs() {
 export function registerZreadTools(ctx, getOptions) {
   const tools = (() => { try { return ctx.get('tools') } catch { return undefined } })()
   if (tools === undefined || tools === null || typeof tools.register !== 'function') return []
-  const mcp = new RemoteMcp(ZHIPU_DEFAULT_ZREAD_MCP_URL, { userAgent: 'dsh-glm-suite/0.2.0', timeoutMs: ZREAD_TIMEOUT_MS })
+  let mcp = new RemoteMcp(ZHIPU_DEFAULT_ZREAD_MCP_URL, { userAgent: 'dsh-glm-suite/0.2.1', timeoutMs: ZREAD_TIMEOUT_MS })
+  /** 配置端点变化时重建客户端（会话缓存随之更换）。 */
+  const ensureMcp = (options) => {
+    if (mcp.url !== options.zreadMcpURL) {
+      mcp = new RemoteMcp(options.zreadMcpURL, { userAgent: 'dsh-glm-suite/0.2.1', timeoutMs: ZREAD_TIMEOUT_MS })
+    }
+    return mcp
+  }
   const disposers = []
   for (const spec of zreadToolSpecs()) {
     const definition = {

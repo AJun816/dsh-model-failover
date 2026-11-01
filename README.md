@@ -62,6 +62,8 @@
 
 详细文档：[packages/glm-suite/README.md](packages/glm-suite/README.md) ｜ 调研与实测记录：[research/glm-mcp-for-dsh.md](research/glm-mcp-for-dsh.md)
 
+> ⚠️ **勿重复挂载**：root patch 已插入 `glm-suite` 行。profile bundles 里若同时列 `dsh-model-failover` 与 `dsh-glm-suite` 两个 bundle，glm-suite 会被加载两次（实测 compose 对同名 insert 不合并、双行双加载）。正确姿势：**bundles 只保留 `dsh-model-failover`**；dependencies 双声明无妨（仅为 pnpm 解析）。
+
 ### 退出 GLM 接管（只要 failover）
 
 在你的用户层 patch（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加，后写覆盖插件层：

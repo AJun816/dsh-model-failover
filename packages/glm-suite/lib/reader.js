@@ -63,6 +63,11 @@ export async function localHttpFetch(request, signal) {
       continue
     }
     const contentType = String(response.headers.get('content-type') ?? '').toLowerCase()
+    const textual = contentType.length === 0 || /^text\//.test(contentType) || /html|json|xml|markdown|yaml|csv/.test(contentType)
+    if (!textual) {
+      // 二进制内容不做文本解码（对齐官方 http provider 的 unsupported 语义），改走智谱 webReader
+      throw webError('local fetch: unsupported content type "' + (contentType || 'unknown') + '" (binary); the GLM webReader backend or a dedicated tool should handle it', 'WEB_FETCH_UNSUPPORTED')
+    }
     const bytes = new Uint8Array(await response.arrayBuffer().catch((error) => {
       throw webError(`local fetch body failed: ${String(error?.message ?? error)}`, 'WEB_PROVIDER_ERROR')
     }))
@@ -91,8 +96,16 @@ export class ZhipuReaderProvider {
 
   constructor(options) {
     this.#options = options
-    this.#mcp = new RemoteMcp(ZHIPU_DEFAULT_READER_MCP_URL, { userAgent: 'dsh-glm-suite/0.2.0' })
+    this.#mcp = new RemoteMcp(ZHIPU_DEFAULT_READER_MCP_URL, { userAgent: 'dsh-glm-suite/0.2.1' })
     this.id = ZHIPU_READER_PROVIDER_ID
+  }
+
+  /** 配置端点变化时重建客户端（会话缓存随之更换）。 */
+  #ensureMcp(options) {
+    if (this.#mcp.url !== options.readerMcpURL) {
+      this.#mcp = new RemoteMcp(options.readerMcpURL, { userAgent: 'dsh-glm-suite/0.2.1' })
+    }
+    return this.#mcp
   }
 
   available() {
@@ -119,7 +132,7 @@ export class ZhipuReaderProvider {
         continue
       }
       try {
-        const result = await this.#mcp.callTool(apiKey, MCP_TOOL_NAME, { url: request.url }, signal)
+        const result = await this.#ensureMcp(options).callTool(apiKey, MCP_TOOL_NAME, { url: request.url }, signal)
         const decoded = decodeWebReader(result)
         if (decoded === undefined) {
           throw new ZhipuMcpError('webReader returned no decodable content', 'EMPTY')

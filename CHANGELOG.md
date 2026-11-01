@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [glm-suite 0.2.1] — 2026-11-01（联网校验修复）
+
+### Fixed
+- 配置端点字段（searchMcpURL/readerMcpURL/zreadMcpURL）此前未接进 MCP 客户端（死配置）——端点变化现在自动重建客户端（会话缓存随之更换）。
+- 本地 http 兜底对二进制内容（PDF/图片等）不再文本解码，显式报 unsupported（对齐官方 http provider 语义），避免向模型返回乱码。
+- 移除遗留死代码（SETTINGS_NAMESPACE）。
+
+### 调研结论（2026-11-01 联网校验）
+- 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
+- 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
+
 ## [0.9.0] — 2026-11-01
 
 ### Added — 一仓双插件：dsh-glm-suite（GLM Coding Plan 四件套）

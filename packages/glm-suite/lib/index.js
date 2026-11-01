@@ -23,7 +23,6 @@ export const name = 'glm-suite'
 /** 注入 web 缝（provider 注册面）；tools 经 ctx.get 惰性获取（缺席时降级）。 */
 export const inject = ['web']
 
-const SETTINGS_NAMESPACE = 'glm-suite'
 export const DEFAULT_KEY_POOL = [
   'ZAI_CODING_CN_API_KEY',
   'ZAI_CODING_CN_2_API_KEY',

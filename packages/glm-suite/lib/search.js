@@ -59,8 +59,16 @@ export class ZhipuSearchProvider {
 
   constructor(options) {
     this.#options = options
-    this.#mcp = new RemoteMcp(ZHIPU_DEFAULT_SEARCH_MCP_URL, { userAgent: 'dsh-glm-suite/0.2.0' })
+    this.#mcp = new RemoteMcp(ZHIPU_DEFAULT_SEARCH_MCP_URL, { userAgent: 'dsh-glm-suite/0.2.1' })
     this.id = ZHIPU_PROVIDER_ID
+  }
+
+  /** 配置端点变化时重建客户端（会话缓存随之更换）。 */
+  #ensureMcp(options) {
+    if (this.#mcp.url !== options.searchMcpURL) {
+      this.#mcp = new RemoteMcp(options.searchMcpURL, { userAgent: 'dsh-glm-suite/0.2.1' })
+    }
+    return this.#mcp
   }
 
   available() {
@@ -93,7 +101,7 @@ export class ZhipuSearchProvider {
         continue
       }
       try {
-        const result = await this.#mcp.callTool(apiKey, MCP_TOOL_NAME, args, signal)
+        const result = await this.#ensureMcp(options).callTool(apiKey, MCP_TOOL_NAME, args, signal)
         return mapZhipuResults(decodeWebSearchPrime(result).raw)
       } catch (error) {
         if (signal?.aborted === true) throw webError('zhipu search aborted', 'WEB_ABORTED')
