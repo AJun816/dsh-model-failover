@@ -154,12 +154,17 @@ export async function writeLoadMarker(version: string, note?: string): Promise<v
 export async function recordArmed(ctx: ListenerContext, state: ArmedState): Promise<void> {
   try {
     const settings = (ctx as unknown as { get?: (name: string) => unknown }).get?.('settings') as SettingsFace | undefined
-    if (settings === undefined) return
-    const described = await settings.describe()
-    const view = described.namespaces?.find((row) => row.ns === 'model-failover')
-    const merged = { ...(view?.value ?? {}), lastArmed: state }
-    await settings.update?.('model-failover', merged, view?.revision)
-  } catch { /* best effort: never block wiring */ }
+    if (settings !== undefined) {
+      const described = await settings.describe()
+      const view = described.namespaces?.find((row) => row.ns === 'model-failover')
+      const merged = { ...(view?.value ?? {}), lastArmed: state }
+      await settings.update?.('model-failover', merged, view?.revision)
+      return
+    }
+  } catch { /* fall through to the secondary channel */ }
+  // Secondary channel: the settings namespace may be unserved or the update
+  // unsupported — still leave an external trace in load.log.
+  await writeLoadMarker(state.version, 'armed: ' + state.mode + ' group=' + state.group + ' entries=' + String(state.entries) + (state.note !== undefined ? ' note=' + state.note : ''))
 }
 
 /**

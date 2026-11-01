@@ -99,11 +99,11 @@ test('pool cools and auto-recovers after cooldown', () => {
 })
 
 test('module evaluation writes an external load marker', async () => {
-  // 导入即写 ~/.dsh/model-failover/load.log（0.9.7 加载可观测性）
-  const { homedir } = await import('node:os')
+  // 导入即写 <DSH_HOME>/model-failover/load.log（0.9.7 可观测性；测试经 loader 隔离到临时 DSH_HOME）
   const { readFileSync, existsSync } = await import('node:fs')
   const { join } = await import('node:path')
-  const markerPath = join(homedir(), '.dsh', 'model-failover', 'load.log')
+  assert.ok(process.env.DSH_HOME !== undefined, 'test loader must isolate DSH_HOME')
+  const markerPath = join(process.env.DSH_HOME, 'model-failover', 'load.log')
   // 触发一次 fresh 评估（test loader 可能已缓存；直接调用导出的标记函数兜底断言）
   const { writeLoadMarker, VERSION } = mod
   await writeLoadMarker(VERSION, 'self-test')

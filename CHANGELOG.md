@@ -13,6 +13,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.8] — 2026-11-01
+
+### Fixed — 装配失败外泄 + 双通道 armed + 测试隔离
+- apply() 全包裹护栏：装配段任何异常先写 load.log（`apply failed: …`）再抛——0.9.7 只护了 wire，apply 前半段抛错仍会无声消失（今晚实况：模块求值✓、装配✗、无痕迹）。
+- recordArmed 双通道：settings 命名空间不可用/更新失败时，兜底把 armed 快照写进 load.log——armed 状态保证外部可见。
+- 测试隔离：test/loader.mjs 把 DSH_HOME 指到临时目录，测试不再污染真实 ~/.dsh/model-failover/switches.log 与 load.log。
+
 ## [0.9.7] — 2026-11-01
 
 ### Added — 加载可观测性硬化（排障盲区终局）

@@ -158,6 +158,18 @@ function startAutoDiscovery(ctx: ListenerContext, config: Config) {
  * @param internals test hooks
  */
 export function apply(ctx: ListenerContext, config: Config = {}, internals: ApplyInternals = {}): { pool: AccountPool } {
+  try {
+    return runApply(ctx, config, internals)
+  } catch (error) {
+    // Load-level failures must leave an external trace: a plugin that fails
+    // before wiring otherwise vanishes into host stdout (2026-11-01 case:
+    // module evaluated, apply threw, plugin inert, no visible reason).
+    void writeLoadMarker(VERSION, 'apply failed: ' + String((error as Error)?.message ?? error))
+    throw error
+  }
+}
+
+function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInternals = {}): { pool: AccountPool } {
   const now = internals.now ?? (() => Date.now())
   const pool = internals.pool ?? createPool({ cooldownMs: 30 * 60_000, now })
 
