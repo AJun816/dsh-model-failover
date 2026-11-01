@@ -2,9 +2,11 @@
 
 [![CI](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-4D6BFE.svg?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.8.4-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
 
 > **DeepSeek Harness（DSH）多供应商 / 多账号模型自动替补插件** —— 额度用尽、限流、鉴权失败时自动切换到下一个账号，任务不中断。零第三方运行时依赖，全程防御式降级：插件任何异常都等价于未安装。
+>
+> **v0.9.0 起一仓双插件**：本仓库同时携带 [dsh-glm-suite](packages/glm-suite)（GLM Coding Plan 套餐四 MCP 完整封装：`web_search`/`web_fetch` 后端切换 + `glm_zread_*` + `glm_vision_*` 原生工具 + 多 key 池轮换）。**一次安装 = 两个插件同时生效**，详见下方[「第二个插件：dsh-glm-suite」](#第二个插件dsh-glm-suiteglm-coding-plan-四件套)。
 
 ## 它解决什么问题
 
@@ -22,8 +24,11 @@
 - 🖼️ **GUI 卡片**：设置 → 插件 → "Model Failover 模型替补"，可视化编辑分组/顺序/冷却/触发类别，一键"复制"为同供应商加账号（Key 进 DSH 加密凭据库），最近切换横幅
 - 📡 **可观测**：DSH 日志 `model-failover:` 前缀行、插件目录 `switches.log`（JSONL）、会话记录（`plugin:model-failover/switch`，官方 ignorable 通道）、卡片横幅
 - 🪶 **近零依赖**：运行时仅 `@deepseek-ai/schemastery`；只使用 DSH 公开插件契约
+- 🔗 **一仓双插件（v0.9.0）**：随包附带 dsh-glm-suite —— GLM 套餐搜索/网页读取/开源仓库/视觉理解四 MCP 原生化，多 key 池轮换，装一个仓库全带上
 
 ## 安装
+
+> v0.9.0 起下表任一安装源装完即**同时**得到 model-failover 与 dsh-glm-suite 两个插件（root 依赖 `file:packages/glm-suite` + 根 patch 双行插入）。只要替补、不要 GLM 网络接管的用户见[退出 GLM 接管](#退出-glm-接管只要-failover)。
 
 在 DSH 的插件管理器（设置 → 插件 → 添加插件）中输入以下任一安装源：
 
@@ -41,6 +46,34 @@
 - GitHub/npm 安装的插件更新方式：先卸载再安装新版。
 - 安装后把账号池配置写进 `cordis.patch.yml`（patch 层配置在 DSH 升级后保留），或直接用 GUI 卡片配置（即时生效）。
 - 插件配置键为 `model-failover`（cordis 插件名），与包名 `dsh-model-failover` 略有不同，属正常现象。
+
+## 第二个插件：dsh-glm-suite（GLM Coding Plan 四件套）
+
+`packages/glm-suite` 是完整的独立 DSH 插件（也可单独拆出安装），把 GLM Coding Plan 的套餐能力一网打尽：
+
+| 套餐能力 | 接入方式 | 亮点 |
+|---|---|---|
+| 联网搜索 `web_search_prime` | `web_search` 后端替换（provider `zhipu-official`） | 多 key 池 + 1310/1308 重置时刻冷却；≈1 积分/次，不花 DeepSeek 的钱 |
+| 网页读取 `webReader` | `web_fetch` 后端替换（provider `zhipu-reader`） | 池耗尽自动本地 http 兜底，web_fetch 永不死 |
+| 开源仓库 `zread` | `glm_zread_search_doc / repo_structure / read_file` 三件原生工具 | 仓库文档/结构/源码调研走套餐积分 |
+| 视觉理解 `@z_ai/mcp-server` | `glm_vision_*` 八件原生工具（懒 spawn 本地子进程） | 识图/OCR/错误截图诊断/图表解读/UI diff/视频理解；配额触顶自动换号重启 |
+
+**多 key 轮换**是两个社区 GLM 插件都没有的能力：`apiKeyEnvs`（默认三把 `ZAI_CODING_CN*` 凭据引用）顺序即优先级，窗口类错误（1310/1308 等）解析重置时刻自动冷却、欠费/过期永久标记、参数类错误不轮换直接失败。搜索池全耗尽时显式报错（含各 key 重置时刻），**绝不静默回落 DeepSeek 计费**。
+
+详细文档：[packages/glm-suite/README.md](packages/glm-suite/README.md) ｜ 调研与实测记录：[research/glm-mcp-for-dsh.md](research/glm-mcp-for-dsh.md)
+
+### 退出 GLM 接管（只要 failover）
+
+在你的用户层 patch（`~/.dsh/profiles/<profile>/cordis.patch.yml`）追加，后写覆盖插件层：
+
+```yaml
+- id: glm-suite
+  disabled: true
+- id: web
+  config:
+    searchProvider: deepseek-official
+    fetchProvider: http
+```
 
 ## 快速开始
 

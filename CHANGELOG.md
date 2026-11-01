@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.9.0] — 2026-11-01
+
+### Added — 一仓双插件：dsh-glm-suite（GLM Coding Plan 四件套）
+- `packages/glm-suite`：GLM Coding Plan 套餐能力的完整封装，root `file:` 依赖随本包安装，根 patch 插入 `glm-suite` 行并把 `web` 行钉到智谱 —— **一次安装两个插件同时生效**。
+  - 搜索：`web_search` 后端 → `web_search_prime` 套餐 MCP（provider `zhipu-official`）
+  - 读取：`web_fetch` 后端 → `webReader` 套餐 MCP（provider `zhipu-reader`），池耗尽本地 http 兜底
+  - 仓库：`glm_zread_search_doc / glm_zread_repo_structure / glm_zread_read_file` 原生工具（zread MCP）
+  - 视觉：`glm_vision_*` 八件原生工具（本地 stdio `@z_ai/mcp-server` 懒启动桥接）
+  - **多 key 池轮换**：1310/1308 等窗口错误解析重置时刻自动冷却换号；1113/1309/1313/1000-1003 永久标记；搜索池耗尽显式失败，绝不回落 DeepSeek 计费
+  - 质量与实测：9 项单测 + apply 级 10 断言集成测试 + 真 key 冒烟（含 1310 自动轮换、本地图 12s 识图）；调研记录见 `research/glm-mcp-for-dsh.md`
+- 根 patch 新增 `web` 行钉选；不想要 GLM 网络接管的用户可在用户层 patch 关闭（README「退出 GLM 接管」）。
+
 ## [0.8.4] — 2026-10-31
 
 ### Added
