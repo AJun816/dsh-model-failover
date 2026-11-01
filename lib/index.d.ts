@@ -31,6 +31,7 @@ import { VERSION } from './version.js';
 export declare const name = "model-failover";
 export declare const inject: string[];
 export { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js';
+export { writeLoadMarker } from './records.js';
 export { createPool } from './pool.js';
 export { activeGroupOf };
 export { ConfigBinding as Config };

@@ -47,6 +47,7 @@ void writeLoadMarker(VERSION)
 
 // ---- Public surface (kept stable for the loader, GUI card and tests) ----
 export { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
+export { writeLoadMarker } from './records.js'
 export { createPool } from './pool.js'
 export { activeGroupOf }
 export { ConfigBinding as Config }
