@@ -7,6 +7,22 @@
  * @module dsh-model-failover/records
  */
 import type { ListenerContext, SwitchRecord, WaterfallPayload } from './types.js';
+/** One armed-state snapshot, written to the settings namespace at every wire(). */
+export interface ArmedState {
+    at: number;
+    version: string;
+    group: string;
+    entries: number;
+    mode: 'active' | 'inactive';
+    note?: string;
+}
+/**
+ * Persist the armed-state snapshot into the settings namespace so the running
+ * plugin's status is observable WITHOUT host stdout (the heartbeat log line is
+ * invisible to external tooling; this field is readable from the config
+ * surface the GUI card already serves).
+ */
+export declare function recordArmed(ctx: ListenerContext, state: ArmedState): Promise<void>;
 /**
  * Record one failover switch through every official channel. Each channel is
  * best-effort; a failure in one never blocks the others.

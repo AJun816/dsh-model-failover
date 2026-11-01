@@ -98,6 +98,24 @@ test('pool cools and auto-recovers after cooldown', () => {
   assert.equal(pool.snapshot()['glm-1/glm-4.7'], undefined)
 })
 
+test('wire() persists lastArmed to the settings namespace (external observability)', async () => {
+  const ctx = fakeCtx()
+  const updates = []
+  ctx.get = (name) => name === 'settings' ? {
+    describe: async () => ({ namespaces: [{ ns: 'model-failover', value: {}, revision: 7 }] }),
+    update: async (ns, patch, rev) => { updates.push({ ns, patch, rev }) },
+  } : undefined
+  apply(ctx, config)
+  await new Promise((r) => setTimeout(r, 10))
+  const hit = updates.find((u) => u.patch?.lastArmed !== undefined)
+  assert.ok(hit, 'lastArmed write must reach the settings namespace')
+  assert.equal(hit.ns, 'model-failover')
+  assert.equal(hit.patch.lastArmed.mode, 'active')
+  assert.equal(hit.patch.lastArmed.group, 'glm-pool')
+  assert.equal(hit.patch.lastArmed.entries, 3)
+  assert.match(hit.patch.lastArmed.version, /^\d+\.\d+\.\d+$/)
+})
+
 test('routes to first healthy entry and preserves other config fields', async () => {
   const ctx = fakeCtx()
   apply(ctx, config)

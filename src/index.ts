@@ -32,7 +32,7 @@ import type {
 } from './types.js'
 import { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
 import { createPool, firstHealthyEntry } from './pool.js'
-import { recordSwitch } from './records.js'
+import { recordArmed, recordSwitch } from './records.js'
 import { activeGroupOf, Config as ConfigBinding } from './config.js'
 import { VERSION } from './version.js'
 import { boolOf, finiteOr, stringListOf, valueOf } from './coerce.js'
@@ -190,9 +190,11 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
 
     if (group === undefined || group.entries.length === 0) {
       ctx.logger?.info?.('model-failover: no groups or entries configured — plugin stays inactive (pass-through)')
+      void recordArmed(ctx, { at: now(), version: VERSION, group: '-', entries: 0, mode: 'inactive', note: 'no groups or entries configured' })
       return () => {}
     }
     ctx.logger?.info?.(`model-failover: v${VERSION} active group "${group.id}" with ${group.entries.length} entries (${group.entries.map((e) => e.provider + '/' + e.model).join(' → ')})`)
+    void recordArmed(ctx, { at: now(), version: VERSION, group: group.id, entries: group.entries.length, mode: 'active' })
 
     /** First healthy entry outside the active group (opt-in catalog fallback). */
     const fallbackEntry = (): FailoverEntry | undefined => {

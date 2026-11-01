@@ -77,8 +77,18 @@ async function resolveDefaultSwitchLog(): Promise<string | undefined> {
 }
 
 interface SettingsFace {
-  describe(): Promise<{ namespaces?: Array<{ ns: string, value?: { lastSwitches?: SwitchRecord[] }, revision?: number }> }>
+  describe(): Promise<{ namespaces?: Array<{ ns: string, value?: { lastSwitches?: SwitchRecord[], lastArmed?: ArmedState }, revision?: number }> }>
   update?(ns: string, patch: Record<string, unknown>, revision?: number): Promise<unknown>
+}
+
+/** One armed-state snapshot, written to the settings namespace at every wire(). */
+export interface ArmedState {
+  at: number
+  version: string
+  group: string
+  entries: number
+  mode: 'active' | 'inactive'
+  note?: string
 }
 
 /** How many recent switches the GUI banner shows. */
@@ -107,6 +117,23 @@ async function recordToGuiNotice(ctx: ListenerContext, record: SwitchRecord): Pr
   const view = described.namespaces?.find((row) => row.ns === 'model-failover')
   const history = [...(view?.value?.lastSwitches ?? []), record].slice(-GUI_HISTORY_LENGTH)
   await settings.update?.('model-failover', { lastSwitches: history }, view?.revision)
+}
+
+/**
+ * Persist the armed-state snapshot into the settings namespace so the running
+ * plugin's status is observable WITHOUT host stdout (the heartbeat log line is
+ * invisible to external tooling; this field is readable from the config
+ * surface the GUI card already serves).
+ */
+export async function recordArmed(ctx: ListenerContext, state: ArmedState): Promise<void> {
+  try {
+    const settings = (ctx as unknown as { get?: (name: string) => unknown }).get?.('settings') as SettingsFace | undefined
+    if (settings === undefined) return
+    const described = await settings.describe()
+    const view = described.namespaces?.find((row) => row.ns === 'model-failover')
+    const merged = { ...(view?.value ?? {}), lastArmed: state }
+    await settings.update?.('model-failover', merged, view?.revision)
+  } catch { /* best effort: never block wiring */ }
 }
 
 /**

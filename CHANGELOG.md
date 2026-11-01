@@ -13,6 +13,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.6] — 2026-11-01
+
+### Added — armed 状态外部可观测
+- 每次 wire() 把 `lastArmed`（时间/版本/分组/条目数/active 或 inactive+原因）写入 settings 命名空间——插件是否生效不再依赖不可见的 stdout 心跳（2026-11-01 晚排障：卡片在、零切换记录、外部无从判断 armed，盲区成本一整轮）。
+
 ## [0.9.5] — 2026-11-01
 
 ### Fixed — 切换日志迁出安装目录
