@@ -41,10 +41,10 @@ async function resolvePluginRecordWriter(): Promise<PluginRecordWriter | undefin
 }
 
 /**
- * Resolved-once default switch-log location: <plugin root>/switches.log, i.e.
- * next to lib/ in the installed plugin directory. Derived from import.meta.url
- * so it works for every install channel (git URL, npm, local path) and every
- * user — never a machine-specific absolute path.
+ * Resolved-once default switch-log location: $DSH_HOME/model-failover/
+ * switches.log — a stable per-user path that survives plugin reinstalls
+ * (the pre-0.9.5 location inside the install tree was wiped by every
+ * rm+reinstall). Falls back to ~/.dsh when DSH_HOME is unset.
  */
 let defaultSwitchLog: string | undefined | false = false
 
@@ -53,18 +53,20 @@ async function resolveDefaultSwitchLog(): Promise<string | undefined> {
   defaultSwitchLog = undefined
   try {
     // Computed-specifier dynamic imports keep the build independent of
-    // @types/node; in the installed plugin import.meta.url is
-    // <plugin>/lib/index.js, so the plugin root is one dirname up.
-    const urlSpecifier = 'node:url'
+    // @types/node. The switch log lives OUTSIDE the install tree since v0.9.5:
+    // a log inside node_modules is destroyed by every plugin reinstall (an
+    // rm+reinstall during the 2026-11-01 incident wiped the day's history).
+    // Stable home: $DSH_HOME/model-failover/switches.log (default ~/.dsh/...).
+    const osSpecifier = 'node:os'
     const pathSpecifier = 'node:path'
     const fsSpecifier = 'node:fs'
-    const urlMod = await import(urlSpecifier) as { fileURLToPath?: (url: string) => string }
-    const pathMod = await import(pathSpecifier) as { dirname?: (p: string) => string, join?: (...parts: string[]) => string }
+    const osMod = await import(osSpecifier) as { homedir?: () => string }
+    const pathMod = await import(pathSpecifier) as { join?: (...parts: string[]) => string }
     const fsMod = await import(fsSpecifier) as { mkdirSync?: (path: string, options?: { recursive?: boolean }) => void }
-    const meta = import.meta as unknown as { url?: string }
-    const here = meta.url === undefined ? undefined : urlMod.fileURLToPath?.(meta.url)
-    if (here === undefined || pathMod.dirname === undefined || pathMod.join === undefined) return undefined
-    const dir = pathMod.dirname(pathMod.dirname(here))
+    if (osMod.homedir === undefined || pathMod.join === undefined) return undefined
+    const home = (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : undefined)
+      ?? osMod.homedir() + '/.dsh'
+    const dir = pathMod.join(home, 'model-failover')
     fsMod.mkdirSync?.(dir, { recursive: true })
     defaultSwitchLog = pathMod.join(dir, 'switches.log')
   } catch { /* best effort: the file-log channel is optional */ }

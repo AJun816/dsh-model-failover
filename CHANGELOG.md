@@ -13,6 +13,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.5] — 2026-11-01
+
+### Fixed — 切换日志迁出安装目录
+- switches.log 从插件安装目录迁至 `$DSH_HOME/model-failover/switches.log`（默认 `~/.dsh/...`）：旧位置在 node_modules 内，每次重装即灭史（2026-11-01 排障时 rm+重装把当日切换历史一并删除，教训入库）。
+
 ## [0.9.4] — 2026-11-01
 
 ### Added — 版本可观测
