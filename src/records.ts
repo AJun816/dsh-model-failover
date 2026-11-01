@@ -60,11 +60,14 @@ async function resolveDefaultSwitchLog(): Promise<string | undefined> {
     const osSpecifier = 'node:os'
     const pathSpecifier = 'node:path'
     const fsSpecifier = 'node:fs'
+    const processSpecifier = 'node:process'
     const osMod = await import(osSpecifier) as { homedir?: () => string }
     const pathMod = await import(pathSpecifier) as { join?: (...parts: string[]) => string }
     const fsMod = await import(fsSpecifier) as { mkdirSync?: (path: string, options?: { recursive?: boolean }) => void }
+    const processMod = await import(processSpecifier) as { env?: Record<string, string | undefined> }
     if (osMod.homedir === undefined || pathMod.join === undefined) return undefined
-    const home = (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : undefined)
+    const envHome = processMod.env?.DSH_HOME
+    const home = (envHome !== undefined && envHome.trim() !== '' ? envHome : undefined)
       ?? osMod.homedir() + '/.dsh'
     const dir = pathMod.join(home, 'model-failover')
     fsMod.mkdirSync?.(dir, { recursive: true })
