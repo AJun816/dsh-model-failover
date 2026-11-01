@@ -27,12 +27,14 @@
  */
 import type { AccountPool, ApplyInternals, Config, ListenerContext } from './types.js';
 import { activeGroupOf, Config as ConfigBinding } from './config.js';
+import { VERSION } from './version.js';
 export declare const name = "model-failover";
 export declare const inject: string[];
 export { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js';
 export { createPool } from './pool.js';
 export { activeGroupOf };
 export { ConfigBinding as Config };
+export { VERSION };
 export type { AccountPool, ApplyInternals, FailoverEntry, FailoverGroup, LlmCallConfig, ListenerContext, RequestErrorAction, SwitchRecord, WaterfallPayload, } from './types.js';
 /**
  * Install the failover listeners.

@@ -34,6 +34,7 @@ import { classifyFailure, providerExcluded, retryAfterFromMessage } from './clas
 import { createPool, firstHealthyEntry } from './pool.js'
 import { recordSwitch } from './records.js'
 import { activeGroupOf, Config as ConfigBinding } from './config.js'
+import { VERSION } from './version.js'
 import { boolOf, finiteOr, stringListOf, valueOf } from './coerce.js'
 
 export const name = 'model-failover'
@@ -44,6 +45,7 @@ export { classifyFailure, providerExcluded, retryAfterFromMessage } from './clas
 export { createPool } from './pool.js'
 export { activeGroupOf }
 export { ConfigBinding as Config }
+export { VERSION }
 export type {
   AccountPool, ApplyInternals, FailoverEntry, FailoverGroup,
   LlmCallConfig, ListenerContext, RequestErrorAction, SwitchRecord, WaterfallPayload,
@@ -190,7 +192,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
       ctx.logger?.info?.('model-failover: no groups or entries configured — plugin stays inactive (pass-through)')
       return () => {}
     }
-    ctx.logger?.info?.(`model-failover: active group "${group.id}" with ${group.entries.length} entries (${group.entries.map((e) => e.provider + '/' + e.model).join(' → ')})`)
+    ctx.logger?.info?.(`model-failover: v${VERSION} active group "${group.id}" with ${group.entries.length} entries (${group.entries.map((e) => e.provider + '/' + e.model).join(' → ')})`)
 
     /** First healthy entry outside the active group (opt-in catalog fallback). */
     const fallbackEntry = (): FailoverEntry | undefined => {

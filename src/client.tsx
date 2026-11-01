@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { VERSION } from './version.js'
 import type { CSSProperties, ReactNode } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { Checkbox } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -410,7 +411,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
   }
 
   if (props.view === 'summary') {
-    return '多供应商 / 多账号模型自动替补：额度用完自动按替补顺序切换下一棒，任务不中断（Model & account failover）'
+    return `多供应商 / 多账号模型自动替补：额度用完自动按替补顺序切换下一棒，任务不中断（Model & account failover）· v${VERSION}`
   }
   if (saved === null || draft === null) {
     return <p style={hint}>{notice?.text ?? '加载中… / loading…'}</p>

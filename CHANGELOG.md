@@ -13,6 +13,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.4] — 2026-11-01
+
+### Added — 版本可观测
+- 启动心跳携带版本：`model-failover: v0.9.4 active group ...`——armed 判定与版本识别一步到位。
+- 插件卡片描述行带版本（设置 → 插件 → Model Failover）。
+- `scripts/write-version.mjs`：构建时从 package.json 生成 `src/version.ts`（单一来源，永不脱钩）；新增同步性守卫测试。
+
 ## [0.9.3] — 2026-11-01
 
 ### Changed — 配置链是权威边界（语义修正）

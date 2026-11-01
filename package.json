@@ -1,7 +1,7 @@
 {
   "name": "dsh-model-failover",
   "description": "DeepSeek Harness plugin: automatic model & account failover across providers when quota runs out — near-zero dependencies",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "publishConfig": {
     "access": "public"
   },
@@ -63,7 +63,7 @@
   "homepage": "https://github.com/AJun816/dsh-model-failover#readme",
   "license": "MIT",
   "scripts": {
-    "build": "tsc && node scripts/build-client.mjs",
+    "build": "node scripts/write-version.mjs && tsc && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./test/loader.mjs --test ./test/index.test.mjs"
   },

@@ -50,6 +50,12 @@ const config = {
 
 const seedConfig = { provider: 'seed', model: 'seed-model', temperature: 0.2 }
 
+test('VERSION constant stays in sync with package.json', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(mod.VERSION, pkg.version)
+  assert.match(mod.VERSION, /^\d+\.\d+\.\d+$/)
+})
+
 test('classifyFailure maps codes, statuses, and messages', () => {
   assert.equal(classifyFailure({ code: 'QUOTA' }), 'quota')
   assert.equal(classifyFailure({ code: 'ACCOUNT_QUOTA' }), 'quota')
