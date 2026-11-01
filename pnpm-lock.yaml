@@ -11,9 +11,6 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: '>=3.18.0 <4'
         version: 3.18.5
-      dsh-glm-suite:
-        specifier: file:packages/glm-suite
-        version: file:packages/glm-suite(@deepseek-ai/cordis@4.0.5)
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.5
@@ -408,12 +405,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  dsh-glm-suite@file:packages/glm-suite:
-    resolution: {directory: packages/glm-suite, type: directory}
-    engines: {dsh: '>=0.2.0-rc.2 <0.3.0-0'}
-    peerDependencies:
-      '@deepseek-ai/cordis': '>=0.2.0'
-
   esbuild@0.28.2:
     resolution: {integrity: sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==}
     engines: {node: '>=18'}
@@ -648,11 +639,6 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
-
-  dsh-glm-suite@file:packages/glm-suite(@deepseek-ai/cordis@4.0.5):
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.5
-      '@deepseek-ai/schemastery': 3.18.5
 
   esbuild@0.28.2:
     optionalDependencies:

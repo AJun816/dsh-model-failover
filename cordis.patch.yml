@@ -1,30 +1,7 @@
 # Explicitly installed bundle: dsh-model-failover. The Host row activates the
 # dual-waterfall failover listeners; the client row (dsh.client in package.json)
 # adds the Plugins-page settings card.
-#
-# v0.9.0 起本仓库携带第二个插件 dsh-glm-suite（packages/glm-suite，GLM Coding
-# Plan 套餐四 MCP 封装：web_search/web_fetch 后端替换 + glm_zread_* + glm_vision_*
-# 工具，多 key 池轮换）。root 依赖 file:packages/glm-suite 随本包一起安装；
-# 下方 web 行把内置 web_search/web_fetch 后端钉到智谱套餐 MCP，并插入 glm-suite 行。
-# 只要 failover、不要 GLM 网络接管的用户：在你的用户层 patch（profiles/<x>/
-# cordis.patch.yml）加 "- id: glm-suite" + "disabled: true"，并把 web 行的
-# searchProvider 改回 deepseek-official 即可（用户层后写覆盖本层）。
-
-- id: web
-  config:
-    searchProvider: zhipu-official
-    fetchProvider: zhipu-reader
 
 - insert:
     - id: model-failover
       name: dsh-model-failover
-    - id: glm-suite
-      name: dsh-glm-suite
-      config:
-        apiKeyEnvs:
-          - ZAI_CODING_CN_API_KEY
-          - ZAI_CODING_CN_2_API_KEY
-          - ZAI_CODING_CN_3_API_KEY
-        contentSize: medium
-        recencyFilter: noLimit
-        location: cn

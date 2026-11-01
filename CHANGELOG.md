@@ -13,6 +13,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 社区同类插件（zhipu_plan_tools / dsh-web-search-zai）无公开 issue；官方使用须知并发/风控条款复核无新增约束。
 - 重复 bundle 行为经 app-boot composeEntries 实证：同名 insert 不合并、产生双行双加载——README 明确「只保留 root bundle，勿单独再挂 dsh-glm-suite」。
 
+## [0.9.1] — 2026-11-01
+
+### Changed — 拆分：dsh-glm-suite 独立成仓
+- 0.9.0 的"一仓双插件"形态按维护性拆分：GLM 套餐插件移至独立仓库 [AJun816/dsh-glm-suite](https://github.com/AJun816/dsh-glm-suite)（v0.3.0 起独立演进）。
+- 本仓库回退为纯 model-failover：root 依赖、根 patch 的 glm-suite 行与 web 钉选、README 双插件章节、packages/ 目录全部移除。
+- 安装本仓库不再接管 web_search/web_fetch；需要 GLM 套餐请单独安装 dsh-glm-suite。
+
 ## [0.9.0] — 2026-11-01
 
 ### Added — 一仓双插件：dsh-glm-suite（GLM Coding Plan 四件套）

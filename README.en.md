@@ -2,11 +2,9 @@
 
 [![CI](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml/badge.svg)](https://github.com/AJun816/dsh-model-failover/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-4D6BFE.svg?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.0-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.1-4D6BFE.svg?style=flat-square)](CHANGELOG.md)
 
 > **Automatic model & account failover plugin for DeepSeek Harness (DSH)** — when one account hits quota/rate-limit/auth errors, the next one takes over mid-task. Zero third-party runtime dependencies; every failure path degrades to "as if the plugin were not installed".
->
-> **Since v0.9.0 this repo ships a second plugin**: [dsh-glm-suite](packages/glm-suite) — full GLM Coding Plan suite (web_search / web_fetch backend takeover via the plan's remote MCPs, native `glm_zread_*` repo tools and `glm_vision_*` vision tools, multi-key pool with quota-window cooldown). **One install activates both plugins.** Manual (Chinese): [README.md](README.md) §第二个插件.
 
 **Full user manual (Chinese): [README.md](README.md)** · Design notes: [DESIGN.md](DESIGN.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
 
