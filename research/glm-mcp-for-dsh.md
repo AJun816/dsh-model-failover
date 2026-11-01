@@ -210,7 +210,15 @@
 
 关键修正记录：旧插件代码里的 settingsCtx.settings.installSection() 在 0.2.x 源码中不存在（从未被加载所以从未暴露）——新插件移除该块，配置面改由框架从 Config schema 自动派生。
 
-### 8.3 逃逸缺陷登记（验收协议第六条）
+### 8.3 v0.2.0：视觉 MCP 原生化 + 一仓双插件（2026-11-01 晚）
+
+- **视觉 MCP（第 4 项能力）原生化**：`lib/vision.js` 懒 spawn 本地 stdio `@z_ai/mcp-server@latest`（zai-mcp-server v0.1.5 实测），8 件 `glm_vision_*` 工具原生注册，schema 实测自 tools/list（注意：官方文档的 image_analysis/video_analysis 实际名为 analyze_image/analyze_video）。**实测**：本地 400x225 PNG → analyze_image 12.0s 返回准确中文描述（识别出太浩湖壁纸），且全链路含 key1 1310 → 冷却 → 重启子进程换 key2。
+- **缺陷修复（逃逸登记 E2）**：视觉服务器把 429/1310 包在普通错误文本（Error: ... HTTP 429: {"error":{"code":"1310",...}}）而非 MCP error 信封——extractToolError 增加内嵌 JSON 提取形态 + 单测。
+- **一仓双插件**：v0.9.0 起 dsh-glm-suite（v0.2.0）随 dsh-model-failover 仓库分发（root `file:packages/glm-suite` 依赖 + 根 patch 双行插入 + web 钉选），**装一个仓库 = 两个插件同时生效**；用户层 patch 可退出 GLM 接管（README 有退出配方）。桌面 profile 已 repoint 到仓库路径（CMP PASS 11/11）。
+- 仓库自身测试 28/28；推送 e2c9033 → github.com/AJun816/dsh-model-failover main。
+
+### 8.4 逃逸缺陷登记（验收协议第六条）
+
 
 | 编号 | 缺陷 | 出生原因 | 命中计数 | 转化 |
 |---|---|---|---|---|
