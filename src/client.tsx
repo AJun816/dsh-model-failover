@@ -432,20 +432,29 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
     ;[entries[ei], entries[target]] = [entries[target], entries[ei]]
     patchGroup(gi, { entries })
   }
-  const duplicateEntry = (gi: number, ei: number): void => {
-    const group = groups[gi]
-    const entries = [...(group?.entries ?? [])]
-    if (group === undefined) return
-    const source = entries[ei]
-    if (source === undefined) return
-    let n = 2
-    const base = source.provider.replace(/-\d+$/, '')
-    while (entries.some((e) => e.provider === base + '-' + n)) n += 1
-    entries.splice(ei + 1, 0, { provider: base + '-' + n, model: source.model })
-    patchGroup(gi, { entries })
-  }
 
   const modelOptions = (provider: string): CatalogModel[] => catalogById.get(provider)?.models ?? []
+  /** 账号是否已在替补链（任一分组）中。 */
+  const inChain = (provider: string): boolean =>
+    groups.some((g) => (g.entries ?? []).some((x) => x.provider === provider))
+
+  /** 把账号加入当前激活分组（无分组时创建 main）。模型来源：账号配置或目录的第一个模型。 */
+  const addToChain = (provider: string): void => {
+    if (draft === null || inChain(provider)) return
+    const model = routes?.[provider]?.models?.[0]?.id ?? catalogById.get(provider)?.models?.[0]?.id ?? ''
+    if (groups.length === 0) {
+      setDraftConfig({ ...draft, groups: [{ id: 'main', entries: [{ provider, model }] }] })
+      return
+    }
+    const target = groups.findIndex((g) => g.id === activeId)
+    setDraftConfig({
+      ...draft,
+      groups: groups.map((g, i) => i === target
+        ? { ...g, entries: [...(g.entries ?? []), { provider, model }] }
+        : g),
+    })
+  }
+
   const entryRow = (group: Group, gi: number) => (entry: Entry, ei: number): ReactNode => {
     const options = modelOptions(entry.provider)
     const routableEntry = routable.has(entry.provider) || !catalogById.has(entry.provider)
@@ -454,15 +463,12 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
         <span style={{ opacity: 0.5, fontSize: 12, width: 26, textAlign: 'right' }}>{ei + 1}</span>
         <span style={providerCell} title={'可路由 routable: ' + String(routableEntry)}>
           <span style={dot(routableEntry)} />
-          <Input value={entry.provider} placeholder="provider（账号）" list={'mf-provs-' + gi + '-' + ei}
-            style={{ width: 200 }} onChange={(e) => patchGroup(gi, { entries: (group.entries ?? []).map((x, i) => i === ei ? { ...x, provider: e.target.value } : x) })} />
+          <strong style={{ fontWeight: 600, fontSize: 13 }}>{catalogById.get(entry.provider)?.name ?? entry.provider}</strong>
+          <span style={{ opacity: 0.5, fontSize: 12 }}>{entry.provider}</span>
         </span>
-        <datalist id={'mf-provs-' + gi + '-' + ei}>
-          {providerIds.map((id) => <option key={id} value={id} />)}
-        </datalist>
         {options.length > 0
           ? (
-            <select value={entry.model} style={selectStyle}
+            <select value={entry.model} title="此账号在替补链中使用的模型" style={selectStyle}
               onChange={(e) => patchGroup(gi, { entries: (group.entries ?? []).map((x, i) => i === ei ? { ...x, model: e.target.value } : x) })}>
               {!options.some((m) => m.id === entry.model) ? <option value={entry.model}>{entry.model}</option> : null}
               {options.map((m) => <option key={m.id} value={m.id}>{m.name !== undefined && m.name !== m.id ? m.name + ' · ' + m.id : m.id}</option>)}
@@ -475,8 +481,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
         <span style={{ flex: 1 }} />
         <Button variant="ghost" disabled={ei === 0} onClick={() => moveEntry(gi, ei, -1)} title="上移（优先级更高）">↑</Button>
         <Button variant="ghost" disabled={ei === (group.entries?.length ?? 1) - 1} onClick={() => moveEntry(gi, ei, 1)} title="下移">↓</Button>
-        <Button variant="ghost" onClick={() => duplicateEntry(gi, ei)} title="复制为此账号的替补（多 Key 多账号）">复制账号</Button>
-        <Button variant="ghost" onClick={() => patchGroup(gi, { entries: (group.entries ?? []).filter((_, i) => i !== ei) })} title="删除">✕</Button>
+        <Button variant="ghost" onClick={() => patchGroup(gi, { entries: (group.entries ?? []).filter((_, i) => i !== ei) })} title="移出替补链（账号仍保留在下方账号区）">✕</Button>
       </li>
     )
   }
@@ -590,22 +595,11 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
                 </div>
                 <div style={{ marginTop: 8 }}>
                   {(group.entries ?? []).map(entryRow(group, gi))}
+                  {(group.entries ?? []).length === 0 ? (
+                    <p style={hint}>此分组暂无账号。请到下方「账号（多 Key）」复制或加入账号。</p>
+                  ) : null}
                 </div>
-                <div style={{ ...row, marginTop: 8 }}>
-                  <select defaultValue="" style={selectStyle}
-                    onChange={(e) => {
-                      const provider = e.target.value
-                      if (provider === '') return
-                      const model = catalogById.get(provider)?.models?.[0]?.id ?? ''
-                      patchGroup(gi, { entries: [...(group.entries ?? []), { provider, model }] })
-                      e.target.value = ''
-                    }}>
-                    <option value="" disabled>＋ 从已配置的模型添加…</option>
-                    {providerIds.map((id) => <option key={id} value={id}>{catalogById.get(id)?.name ?? id}</option>)}
-                  </select>
-                  <Button variant="ghost" onClick={() => patchGroup(gi, { entries: [...(group.entries ?? []), { provider: '', model: '' }] })}>＋ 手动添加</Button>
-                </div>
-                <p style={hint}>多 Key：复制账号（或 Models 页新建同名自定义 provider）后各配一个 Key，插件按顺序自动切换。</p>
+                <p style={hint}>此处仅调整替补顺序与各账号使用的模型。添加 / 复制账号统一在下方「账号（多 Key）」进行，新账号会自动插入替补链。</p>
               </div>
             ))}
             <Button variant="outline" onClick={() => setDraftConfig({ ...draft, groups: [...groups, { id: 'group-' + (groups.length + 1), entries: [] }] })}>
@@ -617,7 +611,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
         {/* —— 多账号：同一供应商多把 Key —— */}
         <section style={surface}>
           <h3 style={sectionTitle}>账号（多 Key）</h3>
-          <p style={hint}>自动识别系统已配置的供应商。点「复制」只需填一把新 Key，即可为同一供应商加一个账号（如 GLM × 3）；额度用尽自动切到下一个，其余配置零重复。</p>
+          <p style={hint}>模型与账号统一在此管理：自动识别系统已配置的供应商，点「复制」填一把新 Key 即可为同一供应商加账号（如 GLM × 3，新账号自动插入替补链）；不在链中的账号可点「＋ 替补链」加入。</p>
           {catalog === null || routes === null ? <p style={hint}>正在读取系统模型配置…</p> : (
             <ul style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'grid', gap: 8 }}>
               {providerIds.filter((id) => !providerIds.some((other) => other !== id && isCloneOf(id, other))).map((baseId) => {
@@ -641,7 +635,12 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
                           <Button variant="ghost" onClick={() => { setCopyOf(''); setCopyKey('') }}>取消</Button>
                         </>
                       ) : (
-                        <Button variant="ghost" disabled={baseProfile === undefined || acctBusy} title={baseProfile === undefined ? '该供应商尚未配置，请先在 设置→模型 完成一次配置' : '复制此供应商，为新账号填一把新 Key'} onClick={() => { setCopyOf(baseId); setCopyKey('') }}>复制</Button>
+                        <>
+                          {!autoMode && !inChain(baseId) ? (
+                            <Button variant="ghost" title="把此账号加入当前激活的替补分组" onClick={() => addToChain(baseId)}>＋ 替补链</Button>
+                          ) : null}
+                          <Button variant="ghost" disabled={baseProfile === undefined || acctBusy} title={baseProfile === undefined ? '该供应商尚未配置，请先在 设置→模型 完成一次配置' : '复制此供应商，为新账号填一把新 Key'} onClick={() => { setCopyOf(baseId); setCopyKey('') }}>复制</Button>
+                        </>
                       )}
                     </div>
                     {clones.length > 0 ? (
@@ -680,6 +679,9 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
                                   </select>
                                 )
                               })()}
+                              {!autoMode && !inChain(route) ? (
+                                <Button variant="ghost" title="把此账号加入当前激活的替补分组" onClick={() => addToChain(route)}>＋ 替补链</Button>
+                              ) : null}
                               {editing ? (
                                 <>
                                   <Input type="password" placeholder="新的 API Key" style={{ width: 200 }} value={editKey} onChange={(e) => setEditKey(e.target.value)} />
