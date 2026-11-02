@@ -63,9 +63,9 @@
   "homepage": "https://github.com/AJun816/dsh-model-failover#readme",
   "license": "MIT",
   "scripts": {
-    "build": "node scripts/write-version.mjs && tsc && node scripts/build-client.mjs",
+    "build": "node scripts/write-version.ts && tsc && node scripts/build-client.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import ./test/loader.mjs --test ./test/index.test.mjs"
+    "test": "node --import ./test/loader.mjs --test ./test/index.test.ts"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": ">=3.18.0 <4"

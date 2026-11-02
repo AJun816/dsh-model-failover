@@ -1,0 +1,7 @@
+# Build artifacts committed for zero-build installs — excluded from the
+# GitHub language bar (they are generated from src/, not hand-written).
+lib/*.js linguist-generated
+lib/*.js.map linguist-generated
+
+# Lockfiles and vendored docs
+pnpm-lock.yaml linguist-generated
