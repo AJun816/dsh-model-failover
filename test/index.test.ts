@@ -98,6 +98,28 @@ test('pool cools and auto-recovers after cooldown', () => {
   assert.equal(pool.snapshot()['glm-1/glm-4.7'], undefined)
 })
 
+test('v0.9.10: volatile descriptor config still arms the group (2026-11-02 incident)', async () => {
+  // 事故回放：settings 层接管命名空间后，config 字段以 cosmokit volatile
+  // 描述符（{ get, [volatile.write] }）到达 —— 首臂成功、同毫秒重臂变 inactive。
+  const volatile = <T,>(value: T): object => ({ get: () => value })
+  const ctx = fakeCtx()
+  apply(ctx, {
+    groups: volatile([{ id: 'glm-pool', entries: [
+      { provider: 'glm-1', model: 'glm-4.7' },
+      { provider: 'glm-2', model: 'glm-4.7' },
+    ] }]) as never,
+    activeGroup: volatile('glm-pool') as never,
+    cooldownMinutes: volatile(30) as never,
+    retryOn: volatile(['quota', 'rate-limit', 'auth', 'network']) as never,
+    autoDiscover: volatile(true) as never,
+  })
+  const armed = ctx.log.info.some((line) => line.includes('active group "glm-pool" with 2 entries'))
+  assert.ok(armed, 'volatile-wrapped config must still arm: ' + JSON.stringify(ctx.log.info))
+  // 路由也要工作
+  const out = await ctx.waterfall('agent/request', { agent: { id: 'v1' }, turn: 1, step: 1 }, () => seedConfig)
+  assert.equal(out.provider, 'glm-1')
+})
+
 test('module evaluation writes an external load marker', async () => {
   // 导入即写 <DSH_HOME>/model-failover/load.log（0.9.7 可观测性；测试经 loader 隔离到临时 DSH_HOME）
   const { readFileSync, existsSync } = await import('node:fs')

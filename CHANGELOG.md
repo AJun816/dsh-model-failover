@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.9.10] — 2026-11-02
+
+### Fixed — volatile 描述符拆包（"armed 后同毫秒变 inactive"事故根治）
+- 机制：settings 层接管配置命名空间后，字段以 cosmokit volatile 描述符（`{ get, [volatile.write] }`）到达；普通读取拿到包装对象，`Array.isArray(groups)` 静默失败 → 空链 inactive。load.log 铁证：`armed: active entries=3` 与 `armed: inactive entries=0` 同一毫秒。
+- 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
+- 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
+
 ## [glm-suite 0.2.1] — 2026-11-01（联网校验修复）
 
 ### Fixed

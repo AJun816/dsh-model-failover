@@ -5,6 +5,15 @@
  * @module dsh-model-failover/coerce
  */
 import type { FailoverEntry } from './types.js';
+/**
+ * Unwrap a cosmokit volatile descriptor ({ get, [volatile.write] }) to its
+ * current value. When the settings layer takes a namespace over, config
+ * fields arrive as these descriptors; a plain read yields the wrapper object
+ * and Array.isArray/typeof checks silently fail (the 2026-11-02 incident:
+ * armed active → re-wired inactive within the same millisecond).
+ * Non-descriptor values pass through untouched.
+ */
+export declare function unwrapVolatile<T>(value: unknown): T | undefined;
 /** A finite non-negative number, or the fallback. */
 export declare function finiteOr(value: unknown, fallback: number): number;
 /** The value when it is of the expected (structural) type, else undefined. */

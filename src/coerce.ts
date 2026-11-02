@@ -7,6 +7,24 @@
 
 import type { FailoverEntry } from './types.js'
 
+/**
+ * Unwrap a cosmokit volatile descriptor ({ get, [volatile.write] }) to its
+ * current value. When the settings layer takes a namespace over, config
+ * fields arrive as these descriptors; a plain read yields the wrapper object
+ * and Array.isArray/typeof checks silently fail (the 2026-11-02 incident:
+ * armed active → re-wired inactive within the same millisecond).
+ * Non-descriptor values pass through untouched.
+ */
+export function unwrapVolatile<T>(value: unknown): T | undefined {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const get = (value as { get?: unknown }).get
+    if (typeof get === 'function') {
+      try { return (get as () => unknown)() as T } catch { return value as T }
+    }
+  }
+  return value as T
+}
+
 /** A finite non-negative number, or the fallback. */
 export function finiteOr(value: unknown, fallback: number): number {
   const n = Number(value)

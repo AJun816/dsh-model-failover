@@ -35,7 +35,7 @@ import { createPool, firstHealthyEntry } from './pool.js'
 import { recordArmed, recordSwitch, writeLoadMarker } from './records.js'
 import { activeGroupOf, Config as ConfigBinding } from './config.js'
 import { VERSION } from './version.js'
-import { boolOf, finiteOr, stringListOf, valueOf } from './coerce.js'
+import { boolOf, finiteOr, stringListOf, unwrapVolatile, valueOf } from './coerce.js'
 
 export const name = 'model-failover'
 export const inject = ['llm']
@@ -130,7 +130,7 @@ function startAutoDiscovery(ctx: ListenerContext, config: Config) {
   const llm = ctx.llm
   const refresh = async (): Promise<void> => {
     if (llm === undefined) return
-    const excluded = stringListOf(config.catalogExclude)
+    const excluded = stringListOf(unwrapVolatile(config.catalogExclude))
     try {
       const found: FailoverEntry[] = []
       for (const provider of llm.listProviders()) {
@@ -193,15 +193,19 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
    * the pool's cooling state deliberately survives re-wiring.
    */
   const wire = (): (() => void) => {
-    const cooldownMs = finiteOr(config.cooldownMinutes, 30) * 60_000
-    const retryOn = new Set(stringListOf(config.retryOn).length > 0 ? stringListOf(config.retryOn) : ['quota', 'rate-limit', 'auth', 'network'])
-    const autoOn = boolOf(config.autoDiscover, true)
-    const fallbackOn = boolOf(config.fallbackToCatalog, false)
-    const excluded = stringListOf(config.catalogExclude)
+    // Every read unwraps cosmokit volatile descriptors: after the settings
+    // layer takes the namespace over, plain reads return { get, write }
+    // wrappers and every array/typeof check would silently fail.
+    const cooldownMs = finiteOr(unwrapVolatile(config.cooldownMinutes), 30) * 60_000
+    const retryList = stringListOf(unwrapVolatile(config.retryOn))
+    const retryOn = new Set(retryList.length > 0 ? retryList : ['quota', 'rate-limit', 'auth', 'network'])
+    const autoOn = boolOf(unwrapVolatile(config.autoDiscover), true)
+    const fallbackOn = boolOf(unwrapVolatile(config.fallbackToCatalog), false)
+    const excluded = stringListOf(unwrapVolatile(config.catalogExclude))
 
-    const groupsRaw = valueOf<FailoverGroup[]>(config.groups)
+    const groupsRaw = valueOf<FailoverGroup[]>(unwrapVolatile(config.groups))
     const groupsValue = Array.isArray(groupsRaw) ? groupsRaw : []
-    let group: FailoverGroup | undefined = activeGroupOf({ groups: groupsValue, activeGroup: config.activeGroup })
+    let group: FailoverGroup | undefined = activeGroupOf({ groups: groupsValue, activeGroup: unwrapVolatile(config.activeGroup) })
     if (groupsValue.length === 0 && autoOn) {
       group = { id: 'auto', entries: auto.snapshot() }
     }
