@@ -10,4 +10,4 @@ if (process.env.DSH_MODEL_FAILOVER_TEST_HOME === undefined) {
 process.env.DSH_HOME = process.env.DSH_MODEL_FAILOVER_TEST_HOME
 const { register } = await import('node:module')
 const { pathToFileURL } = await import('node:url')
-register(new URL('./hook.mjs', import.meta.url))
+register(new URL('./hook.ts', import.meta.url))
