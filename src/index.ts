@@ -27,7 +27,7 @@
  */
 
 import type {
-  AccountPool, ApplyInternals, Config, FailoverEntry, FailoverGroup, LlmCallConfig,
+  AccountPool, ApplyInternals, Config, FailoverEntry, FailoverGroup, LlmCallConfig, LlmFailure,
   ListenerContext, RequestErrorAction, SwitchRecord, WaterfallPayload,
 } from './types.js'
 import { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
@@ -167,6 +167,14 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
     void writeLoadMarker(VERSION, 'apply failed: ' + String((error as Error)?.message ?? error))
     throw error
   }
+}
+
+/** Compact provider-side failure fingerprint for the switch log: code + first words of the message. */
+function failureDetail(failure: LlmFailure | null | undefined): string {
+  const code = String(failure?.code ?? '?')
+  const message = String(failure?.message ?? '').replace(/\s+/g, ' ').slice(0, 80)
+  const status = failure?.status !== undefined ? String(failure.status) : ''
+  return [code, status, message].filter(Boolean).join(' ')
 }
 
 function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInternals = {}): { pool: AccountPool } {
@@ -351,7 +359,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           if (model !== undefined && typeof model.select === 'function') {
             model.select({ provider: nextUp.provider, model: nextUp.model })
           }
-          note(payload, failed.provider, nextUp.provider, klass, fallbackNext !== undefined ? 'fallback' : 'chain')
+          note(payload, failed.provider, nextUp.provider, klass + ' [' + failureDetail(failure) + ']', fallbackNext !== undefined ? 'fallback' : 'chain')
           ctx.logger?.info?.(
             'model-failover: %s/%s failed (%s) → switching to %s/%s (cooldown %d min)',
             failed.provider, failed.model, klass, nextUp.provider, nextUp.model,
@@ -379,7 +387,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
             if (model !== undefined && typeof model.select === 'function') {
               model.select({ provider: candidate.provider, model: candidate.model })
             }
-            note(payload, failed.provider, candidate.provider, klass + '/second-chance', 'second-chance')
+            note(payload, failed.provider, candidate.provider, klass + ' [' + failureDetail(failure) + ']/second-chance', 'second-chance')
             ctx.logger?.info?.(
               'model-failover: every account is cooling — second-chance retry on %s (recharged?)',
               candidate.provider,
