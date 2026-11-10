@@ -231,6 +231,16 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       // ours to swallow. Only OUR routing below degrades to pass-through.
       const resolved = await next()
       try {
+        // DSH >= 0.2.2 fixes the route during step preparation and throws when
+        // agent/request proposes a different one. On that architecture the
+        // chain routing lives in agent/pre-step + agent.model.select(), and
+        // this listener must confirm the fixed selection unchanged.
+        if (payload?.agent !== undefined && typeof payload.agent.model?.select === 'function') {
+          const healthy = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
+          const key = agentKeyOf(payload)
+          if (healthy !== undefined && key !== undefined) flights.set(key, healthy)
+          return resolved
+        }
         if (resolved === null || typeof resolved !== 'object') return resolved // nothing sane to reroute
         const selected = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
         const key = agentKeyOf(payload)
@@ -249,6 +259,41 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       // its own config and discard downstream edits when the turn uses the
       // "Default" model selection — prepending here makes our failover reroute
       // the value the loop actually uses.
+    }, { prepend: true })
+
+    // DSH >= 0.2.2: step preparation fixes the route from the agent's model
+    // selection, so chain steering happens here — select the first healthy
+    // entry whenever the current selection sits on a cooling (exhausted)
+    // account. Healthy in-chain manual choices are respected.
+    const offPreStep = ctx.on('agent/pre-step', async (payload: WaterfallPayload, next: () => Promise<unknown>) => {
+      const decision = await next()
+      try {
+        const model = payload?.agent?.model
+        if (model === undefined || typeof model.select !== 'function') return decision
+        const current = payload.modelSelection ?? model.current()
+        if (current === undefined) return decision
+        const coolingNow = pool.isCooling(current.provider)
+        const inChain = group.entries.some((entry) => entry.provider === current.provider)
+        if (!coolingNow) {
+          if (!inChain) return decision // a healthy route outside the chain is the user's choice
+          const key = agentKeyOf(payload)
+          if (key !== undefined) flights.set(key, group.entries.find((entry) => entry.provider === current.provider) ?? { provider: current.provider, model: current.model })
+          return decision
+        }
+        const nextUp = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
+        if (nextUp === undefined || (nextUp.provider === current.provider && nextUp.model === current.model)) return decision
+        model.select({ provider: nextUp.provider, model: nextUp.model })
+        const key = agentKeyOf(payload)
+        if (key !== undefined) flights.set(key, nextUp)
+        ctx.logger?.info?.(
+          'model-failover: %s/%s is cooling — selecting %s/%s for the next step',
+          current.provider, current.model, nextUp.provider, nextUp.model,
+        )
+        return decision
+      } catch (error) {
+        ctx.logger?.warn?.('model-failover: agent/pre-step steering failed, passing through: %o', error)
+        return decision
+      }
     }, { prepend: true })
 
     // Prepend so this listener always runs before same-waterfall recovery
@@ -300,6 +345,12 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
         if (fallbackNext !== undefined) fallbackOk = budgets.spendFallbackHop(stepKey) <= FALLBACK_HOPS_PER_STEP
 
         if (nextUp !== undefined && (used <= group.entries.length || fallbackOk)) {
+          // DSH >= 0.2.2: record the new route as the agent's model selection so
+          // step preparation fixes it before the retried request.
+          const model = payload?.agent?.model
+          if (model !== undefined && typeof model.select === 'function') {
+            model.select({ provider: nextUp.provider, model: nextUp.model })
+          }
           note(payload, failed.provider, nextUp.provider, klass, fallbackNext !== undefined ? 'fallback' : 'chain')
           ctx.logger?.info?.(
             'model-failover: %s/%s failed (%s) → switching to %s/%s (cooldown %d min)',
@@ -324,6 +375,10 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           if (candidate !== undefined) {
             lastRevive.set(candidate.provider, now())
             pool.revive(candidate.provider)
+            const model = payload?.agent?.model
+            if (model !== undefined && typeof model.select === 'function') {
+              model.select({ provider: candidate.provider, model: candidate.model })
+            }
             note(payload, failed.provider, candidate.provider, klass + '/second-chance', 'second-chance')
             ctx.logger?.info?.(
               'model-failover: every account is cooling — second-chance retry on %s (recharged?)',
@@ -369,6 +424,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
 
     return () => {
       offRequest()
+      offPreStep()
       offRequestError()
     }
   }

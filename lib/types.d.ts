@@ -74,6 +74,19 @@ export interface ListenerContext {
         warn?: (format: string, ...args: unknown[]) => void;
     };
 }
+/** DSH >= 0.2.2 model facade carried by fused agent-event payloads. */
+export interface AgentModelFace {
+    current(): {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+    } | undefined;
+    select(selection: {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+    }): void;
+}
 /** Waterfall payload shapes this plugin reads (structural, upgrade-tolerant). */
 export interface WaterfallPayload {
     agent?: {
@@ -81,6 +94,12 @@ export interface WaterfallPayload {
         session?: {
             id?: unknown;
         };
+        model?: AgentModelFace;
+    };
+    modelSelection?: {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
     };
     turn?: number;
     step?: number;

@@ -549,6 +549,50 @@ test('a switch never rejects even when every record channel fails', async () => 
   assert.ok(true)
 })
 
+test('0.2.2 arch: agent/request passes the fixed selection through unchanged', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  const out = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  assert.deepEqual({ provider: out.provider, model: out.model }, { provider: 'seed', model: 'seed-model' }, 'must NOT reroute on the fixed-selection architecture')
+  assert.equal(selections.length, 0)
+})
+
+test('0.2.2 arch: request-error selects the next account before answering retry', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  const action = await ctx.waterfall(
+    'agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA', status: 402 } },
+    () => undefined,
+  )
+  assert.deepEqual(action, { kind: 'retry' })
+  assert.deepEqual(selections, [{ provider: 'glm-2', model: 'glm-4.7' }], 'select() must record the failover route')
+  const route = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  assert.equal(route.provider, 'seed', 'retried request confirms whatever preparation fixed, no rewrite')
+})
+
+test('0.2.2 arch: pre-step steers away from a cooling selection and respects healthy choices', async () => {
+  const ctx = fakeCtx()
+  const { pool } = apply(ctx, config)
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  // Healthy in-chain selection: respected, no select call.
+  await ctx.waterfall('agent/pre-step', { agent, turn: 1, step: 1, modelSelection: { provider: 'glm-1', model: 'glm-4.7' } }, () => 'decision')
+  assert.equal(selections.length, 0)
+  // Cooling selection: steered to the first healthy entry.
+  pool.cool('glm-1')
+  await ctx.waterfall('agent/pre-step', { agent, turn: 2, step: 1, modelSelection: { provider: 'glm-1', model: 'glm-4.7' } }, () => 'decision2')
+  assert.deepEqual(selections, [{ provider: 'glm-2', model: 'glm-4.7' }])
+  // Healthy route outside the chain: the user's own choice, untouched.
+  await ctx.waterfall('agent/pre-step', { agent, turn: 3, step: 1, modelSelection: { provider: 'other', model: 'x' } }, () => 'decision3')
+  assert.equal(selections.length, 1)
+})
+
 test('garbage payloads never throw into the waterfalls', async () => {
   const ctx = fakeCtx()
   apply(ctx, config)
