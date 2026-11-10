@@ -171,6 +171,14 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
   }
 }
 
+/** Minimal ambient timer declaration: the host is Node, but src compiles without node types. */
+declare function setTimeout(handler: () => void, timeout: number): unknown
+
+/** Resolve after ms; a rejected-interruption is impossible with a plain handler. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms) })
+}
+
 /** Compact provider-side failure fingerprint for the switch log: code + first words of the message. */
 function failureDetail(failure: LlmFailure | null | undefined): string {
   const code = String(failure?.code ?? '?')
@@ -366,7 +374,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           // (or honor the provider's Retry-After when given) before retrying.
           const hopDelay = retryAfter > 0 ? Math.min(retryAfter, 5000) : HOP_DELAY_MS
           if (hopDelay > 0 && payload?.signal?.aborted !== true) {
-            await new Promise((resolve) => setTimeout(resolve, hopDelay))
+            await sleep(hopDelay)
           }
           note(payload, failed.provider, nextUp.provider, klass + ' [' + failureDetail(failure) + ']', fallbackNext !== undefined ? 'fallback' : 'chain')
           ctx.logger?.info?.(

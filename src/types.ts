@@ -87,6 +87,7 @@ export interface WaterfallPayload {
   step?: number
   provider?: string
   failure?: LlmFailure
+  signal?: { aborted?: boolean }
 }
 
 /** Test hooks for the apply() wiring. */
