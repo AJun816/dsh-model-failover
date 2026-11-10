@@ -559,7 +559,7 @@ test('0.2.2 arch: agent/request passes the fixed selection through unchanged', a
   assert.equal(selections.length, 0)
 })
 
-test('0.2.2 arch: request-error selects the next account before answering retry', async () => {
+test('0.2.2 arch: fatal quota fails the step fast with the next account selected', async () => {
   const ctx = fakeCtx()
   apply(ctx, config)
   const selections = []
@@ -568,12 +568,31 @@ test('0.2.2 arch: request-error selects the next account before answering retry'
   const action = await ctx.waterfall(
     'agent/request-error',
     { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA', status: 402 } },
-    () => undefined,
+    () => 'downstream-unused',
   )
-  assert.deepEqual(action, { kind: 'retry' })
-  assert.deepEqual(selections, [{ provider: 'glm-2', model: 'glm-4.7' }], 'select() must record the failover route')
-  const route = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
-  assert.equal(route.provider, 'seed', 'retried request confirms whatever preparation fixed, no rewrite')
+  assert.equal(action, undefined, 'same-step retry cannot change the fixed route on 0.2.2 — fail fast')
+  assert.deepEqual(selections, [{ provider: 'glm-2', model: 'glm-4.7' }], 'select() records the failover route for the next step')
+})
+
+test('0.2.2 arch: hard-cap 429 (GLM 1310) is fatal, transient 429 delegates downstream', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, config)
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  const capped = await ctx.waterfall(
+    'agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: '已达到 7 天使用上限' } },
+    () => 'downstream',
+  )
+  assert.equal(capped, undefined, 'cap-style 429 must fast-fail with a durable switch')
+  assert.deepEqual(selections.map((s) => s.provider), ['glm-2'])
+  const transient = await ctx.waterfall(
+    'agent/request-error',
+    { agent, turn: 2, step: 1, provider: 'glm-2', failure: { code: 'RATE_LIMIT', status: 429, message: 'too many requests' } },
+    () => 'downstream-retry',
+  )
+  assert.equal(transient, 'downstream-retry', 'ordinary transient 429 delegates to downstream recovery')
 })
 
 test('0.2.2 arch: pre-step steers away from a cooling selection and respects healthy choices', async () => {
