@@ -574,25 +574,28 @@ test('0.2.2 arch: fatal quota fails the step fast with the next account selected
   assert.deepEqual(selections, [{ provider: 'glm-2', model: 'glm-4.7' }], 'select() records the failover route for the next step')
 })
 
-test('0.2.2 arch: hard-cap 429 (GLM 1310) is fatal, transient 429 delegates downstream', async () => {
+test('0.2.2 arch: any provider 429 with a healthy alternative switches; without one it delegates', async () => {
   const ctx = fakeCtx()
-  apply(ctx, config)
+  const { pool } = apply(ctx, config)
   const selections = []
   const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
   await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
-  const capped = await ctx.waterfall(
+  // GLM 1302 account-rate-throttle: same-route backoff deepens it — must switch.
+  const throttled = await ctx.waterfall(
     'agent/request-error',
-    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: '已达到 7 天使用上限' } },
+    { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: '您的账户已达到速率限制，请您控制请求频率' } },
     () => 'downstream',
   )
-  assert.equal(capped, undefined, 'cap-style 429 must fast-fail with a durable switch')
+  assert.equal(throttled, undefined, 'provider-side 429 with an alternative must fast-fail with a durable switch')
   assert.deepEqual(selections.map((s) => s.provider), ['glm-2'])
-  const transient = await ctx.waterfall(
+  // Every account cooling: bounded same-route recovery is all that remains.
+  for (const entry of config.groups[0].entries) pool.cool(entry.provider)
+  const exhausted = await ctx.waterfall(
     'agent/request-error',
-    { agent, turn: 2, step: 1, provider: 'glm-2', failure: { code: 'RATE_LIMIT', status: 429, message: 'too many requests' } },
+    { agent, turn: 2, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: 'x' } },
     () => 'downstream-retry',
   )
-  assert.equal(transient, 'downstream-retry', 'ordinary transient 429 delegates to downstream recovery')
+  assert.equal(exhausted, 'downstream-retry', 'no healthy alternative delegates to downstream recovery')
 })
 
 test('0.2.2 arch: pre-step steers away from a cooling selection and respects healthy choices', async () => {
