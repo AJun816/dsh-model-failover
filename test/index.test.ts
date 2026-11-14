@@ -176,6 +176,46 @@ test('v0.11.3: short-window 1308 all-cooling still revives (reset plausible soon
   assert.ok(ctx.log.info.some((l) => l.includes('second-chance')), 'revival fires for short windows')
 })
 
+test('v0.11.4: 1310 weekly-cap cooldown capped to one probe cycle (quota-floor accounts recover)', async () => {
+  // 事故：cn/cn-2 对 507K 巨上下文报 1310（剩余周额度在 250K~507K 之间），但正常请求
+  // 完全可用。0.11.3 冷却到 11-16 重置（两天）→ 误杀活账号 → 选号漂到真死的 cn-3。
+  // 修复：1310 冷却封顶 15 分钟（REVIVABLE_WINDOW_MS），floor 账号分钟级回血。
+  const ctx = fakeCtx()
+  const frozen = Date.parse('2026-11-14T16:38:00')
+  const pool = createPool({ cooldownMs: 3 * 60_000, now: () => frozen })
+  apply(ctx, {
+    groups: [{ id: 'glm-pool', entries: [
+      { provider: 'zai-coding-cn', model: 'glm-5.3' },
+      { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+      { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    ] }],
+    activeGroup: 'glm-pool',
+    cooldownMinutes: 3,
+  }, { pool, now: () => frozen })
+  const agent = { id: 'floor-1' }
+  // cn 撞 1310（消息重置时刻两天后）
+  await ctx.waterfall('agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'zai-coding-cn',
+      failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-16 14:32:13 后可继续使用。"}' } },
+    () => 'downstream')
+  // 冷却必须 ≤ 15 分钟（而不是 ~2 天）
+  assert.ok(pool.remaining('zai-coding-cn') <= 15 * 60_000 + 1,
+    '1310 cooldown must cap at one probe cycle, got ' + pool.remaining('zai-coding-cn') + 'ms')
+  // 15 分钟后（复活窗口内）该账号可被再次选中——正常请求即可服务
+  // 对照：1308（5h 窗）仍按重置时刻冷却（重置通常 <2h，语义正确）
+  const pool2 = createPool({ cooldownMs: 60_000, now: () => frozen })
+  apply(ctx, {
+    groups: [{ id: 'g', entries: [{ provider: 'a', model: 'm' }, { provider: 'b', model: 'm' }] }],
+    activeGroup: 'g', cooldownMinutes: 3,
+  }, { pool: pool2, now: () => frozen })
+  await ctx.waterfall('agent/request-error',
+    { agent: { id: 'w5' }, turn: 1, step: 1, provider: 'a',
+      failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1308","message":"已达到 5 小时使用上限，2026-11-14 18:38:00 后可继续使用。"}' } },
+    () => 'downstream')
+  const rem = pool2.remaining('a')
+  assert.ok(rem > 15 * 60_000, '1308 must keep cooling until its reset, got ' + rem + 'ms')
+})
+
 test('module evaluation writes an external load marker', async () => {
   // 导入即写 <DSH_HOME>/model-failover/load.log（0.9.7 可观测性；测试经 loader 隔离到临时 DSH_HOME）
   const { readFileSync, existsSync } = await import('node:fs')

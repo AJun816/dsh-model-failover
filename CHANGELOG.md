@@ -9,6 +9,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.4] — 2026-11-14
+
+### Fixed — 1310 冷却封顶一个探测周期（额度地板误杀根治）
+- 事故（17:25，用户实锤）：1310 有**额度地板效应**——剩余周额度可服务正常请求（实测 250K tok 通过）但对超大上下文（507K）报 1310。0.11.3 把这类账号冷却到重置时刻（两天）→ 误杀完全可用的 cn/cn-2 → 选号漂移到真死的 cn-3 → 每轮先撞尸体。
+- 修复：失败消息含 1310/7 天上限时，冷却封顶 `REVIVABLE_WINDOW_MS`（15 分钟）——floor 账号分钟级回血；真死账号每周期仅花 1 个 fail-fast 探测。1308（5h 窗，重置通常 <2h）保持按重置时刻冷却。
+- 回归测试：1310 冷却 ≤15min + 1308 对照。42/42。
+
 ## [0.11.3] — 2026-11-14
 
 ### Fixed — 远期冷却不再被 second-chance 反复探测（"处理失败"循环根治）

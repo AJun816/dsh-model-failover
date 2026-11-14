@@ -354,10 +354,21 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           return next()
         }
 
-        const retryAfter = Math.max(
+        const failureMessage = String((failure as { message?: string } | null | undefined)?.message ?? '')
+        let retryAfter = Math.max(
           finiteOr(failure?.providerRetryAfterMs, 0),
-          retryAfterFromMessage((failure as { message?: string } | null | undefined)?.message, now()),
+          retryAfterFromMessage(failureMessage, now()),
         )
+        // GLM 1310 weekly-cap cooldown is CAPPED at one probe cycle: the cap
+        // has a quota-floor effect (account serves normal requests but not
+        // huge contexts), so cooling until the multi-day reset mis-classifies
+        // live accounts as dead (2026-11-14: cn/cn-2 fully usable, yet cooled
+        // for two days; selections drifted onto the genuinely dead account).
+        // A short cooldown lets floor-effect accounts recover in minutes while
+        // truly dead ones cost one fail-fast probe per cycle.
+        if (/"code"\s*:\s*"1310"|7 天使用上限|7-day usage limit/i.test(failureMessage)) {
+          retryAfter = Math.min(retryAfter, REVIVABLE_WINDOW_MS)
+        }
         pool.cool(failed.provider, Math.max(cooldownMs, retryAfter))
 
         // DSH >= 0.2.2: a same-step retry re-fires the step's FIXED route — it
