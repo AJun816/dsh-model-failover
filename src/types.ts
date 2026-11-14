@@ -104,5 +104,7 @@ export interface AccountPool {
   isCooling(account: string): boolean
   recover(account: string): void
   revive(account: string): boolean
+  /** Remaining cooling ms (0 when healthy/expired). */
+  remaining(account: string): number
   snapshot(): Record<string, { coolingUntil: number }>
 }

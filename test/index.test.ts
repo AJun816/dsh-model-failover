@@ -120,15 +120,16 @@ test('v0.9.10: volatile descriptor config still arms the group (2026-11-02 incid
   assert.equal(out.provider, 'glm-1')
 })
 
-test('v0.11.2: all-cooling 1310 fails fast — no same-route retry burn, second-chance selects revival (2026-11-14 incident)', async () => {
-  // 事故回放：cn/cn-2 已冷却，cn-3 再撞 1310（周上限）。0.11.1 委托 llm-retry
-  // 烧满 5 次预算全打 cn-3 → 轮次死。修复后：当步快速失败（undefined），
-  // 并做 second-chance 复活选号（下一步探测充值/重置的账号）。
+test('v0.11.3: far-future 1310 fails fast with NO revival probe (2026-11-14 16:38 incident)', async () => {
+  // 事故回放：三账号全因 1310（重置 2026-11-16，还剩两天）冷却。0.11.2 每 5 分钟
+  // 复活一个探测 → 每次探测都是必然失败的用户可见错误。修复后：远期冷却不探测。
   const ctx = fakeCtx()
   const selection = { provider: 'zai-coding-cn-3', model: 'glm-5.3' }
-  const agent = { id: 'burn-1', model: { select: (s) => Object.assign(selection, s), current: () => ({ ...selection }) } }
+  const agent = { id: 'far-1', model: { select: (s) => Object.assign(selection, s), current: () => ({ ...selection }) } }
   let downstreamRan = 0
-  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  const frozen = Date.parse('2026-11-14T16:38:00')
+  const twoDays = 2 * 24 * 60 * 60_000
+  const pool = createPool({ cooldownMs: 60_000, now: () => frozen })
   apply(ctx, {
     groups: [{ id: 'glm-pool', entries: [
       { provider: 'zai-coding-cn', model: 'glm-5.3' },
@@ -137,16 +138,42 @@ test('v0.11.2: all-cooling 1310 fails fast — no same-route retry burn, second-
     ] }],
     activeGroup: 'glm-pool',
     cooldownMinutes: 3,
-  }, { pool, now: () => 1_000 })
-  pool.cool('zai-coding-cn'); pool.cool('zai-coding-cn-2'); pool.cool('zai-coding-cn-3')
+  }, { pool, now: () => frozen })
+  pool.cool('zai-coding-cn', twoDays); pool.cool('zai-coding-cn-2', twoDays); pool.cool('zai-coding-cn-3', twoDays)
   const action = await ctx.waterfall('agent/request-error',
     { agent, turn: 1, step: 1, provider: 'zai-coding-cn-3',
       failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-16 14:32:13 后可继续使用。"}' } },
     () => { downstreamRan += 1; return { kind: 'retry' } })
-  assert.equal(action, undefined, 'all-cooling fatal must fail fast, not delegate')
-  assert.equal(downstreamRan, 0, 'llm-retry must NOT run (no 5/5 same-route burn)')
-  assert.ok(ctx.log.info.some((l) => l.includes('second-chance')), 'second-chance revival must be selected: ' + JSON.stringify(ctx.log.info))
-  assert.notEqual(selection.provider, 'zai-coding-cn-3', 'durable selection must move off the dead account')
+  assert.equal(action, undefined, 'must fail fast')
+  assert.equal(downstreamRan, 0, 'no same-route burn')
+  assert.equal(selection.provider, 'zai-coding-cn-3', 'far-future cap must NOT be probed/selected')
+  assert.ok(!ctx.log.info.some((l) => l.includes('second-chance')), 'no revival for far-future caps')
+})
+
+test('v0.11.3: short-window 1308 all-cooling still revives (reset plausible soon)', async () => {
+  const ctx = fakeCtx()
+  const selection = { provider: 'zai-coding-cn-3', model: 'glm-5.3' }
+  const agent = { id: 'near-1', model: { select: (s) => Object.assign(selection, s), current: () => ({ ...selection }) } }
+  const frozen = Date.parse('2026-11-14T16:38:00')
+  const pool = createPool({ cooldownMs: 60_000, now: () => frozen })
+  apply(ctx, {
+    groups: [{ id: 'glm-pool', entries: [
+      { provider: 'zai-coding-cn', model: 'glm-5.3' },
+      { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+      { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    ] }],
+    activeGroup: 'glm-pool',
+    cooldownMinutes: 3,
+  }, { pool, now: () => frozen })
+  pool.cool('zai-coding-cn', 5 * 60_000); pool.cool('zai-coding-cn-2', 5 * 60_000); pool.cool('zai-coding-cn-3', 5 * 60_000)
+  // 1308：5 小时窗 8 分钟后重置 → 冷却剩余 < 15 分钟窗口 → 值得探测
+  const action = await ctx.waterfall('agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'zai-coding-cn-3',
+      failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1308","message":"已达到 5 小时使用上限，2026-11-14 16:46:00 后可继续使用。"}' } },
+    () => ({ kind: 'retry' }))
+  assert.equal(action, undefined, 'fail fast')
+  assert.notEqual(selection.provider, 'zai-coding-cn-3', 'near reset must be probed via selection')
+  assert.ok(ctx.log.info.some((l) => l.includes('second-chance')), 'revival fires for short windows')
 })
 
 test('module evaluation writes an external load marker', async () => {
@@ -225,9 +252,9 @@ test('non-retryable failure passes through to downstream', async () => {
 
 test('all entries cooling → second-chance revives the first cooled account (recharge probe)', async () => {
   const ctx = fakeCtx()
-  const { pool } = apply(ctx, config)
+  const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   const agent = { id: 'a1' }
-  for (const entry of config.groups[0].entries) pool.cool(entry.provider)
+  for (const entry of config.groups[0].entries) pool.cool(entry.provider, 60_000)
 
   const out = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
   assert.deepEqual({ provider: out.provider, model: out.model }, { provider: 'seed', model: 'seed-model' })
@@ -270,7 +297,7 @@ test('all entries cooling → second-chance revives the first cooled account (re
 
 test('cascades through the whole pool one failure at a time', async () => {
   const ctx = fakeCtx()
-  apply(ctx, config)
+  apply(ctx, { ...config, cooldownMinutes: 1 })
   const agent = { id: 'a1' }
   const seen = []
   for (let i = 0; i < 3; i += 1) {
@@ -293,7 +320,7 @@ test('cascades through the whole pool one failure at a time', async () => {
 
 test('separate agents track in-flight entries independently', async () => {
   const ctx = fakeCtx()
-  const { pool } = apply(ctx, config)
+  const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   const a1 = { id: 'a1' }
   const a2 = { id: 'a2' }
   await ctx.waterfall('agent/request', { agent: a1 }, () => seedConfig)
@@ -309,7 +336,7 @@ test('separate agents track in-flight entries independently', async () => {
 
 test('untracked failure still cools the reported provider and retries', async () => {
   const ctx = fakeCtx()
-  const { pool } = apply(ctx, config)
+  const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   // No prior agent/request: in-flight is unknown; the loop-reported provider wins.
   const action = await ctx.waterfall(
     'agent/request-error',
@@ -335,7 +362,7 @@ test('untrackable failure without provider info passes through (no blind retry)'
 
 test('retry budget bounds one step to one pass over the pool', async () => {
   const ctx = fakeCtx()
-  const { pool } = apply(ctx, config)
+  const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   const agent = { id: 'a1' }
   for (let i = 0; i < 4; i += 1) {
     // each iteration: fail the currently selected account, same turn/step
@@ -605,7 +632,7 @@ test('0.2.2 arch: fatal quota fails the step fast with the next account selected
 
 test('0.2.2 arch: any provider 429 with a healthy alternative switches; without one it delegates', async () => {
   const ctx = fakeCtx()
-  const { pool } = apply(ctx, config)
+  const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   const selections = []
   const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
   await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
@@ -620,7 +647,7 @@ test('0.2.2 arch: any provider 429 with a healthy alternative switches; without 
   // Every account cooling (v0.11.2): fail fast + second-chance revival —
   // delegating would burn llm-retry's budget re-firing the same dead route
   // (2026-11-14 incident: 5/5 retries on a weekly-capped account).
-  for (const entry of config.groups[0].entries) pool.cool(entry.provider)
+  for (const entry of config.groups[0].entries) pool.cool(entry.provider, 60_000)
   const exhausted = await ctx.waterfall(
     'agent/request-error',
     { agent, turn: 2, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: '429 too many requests' } },
@@ -632,7 +659,7 @@ test('0.2.2 arch: any provider 429 with a healthy alternative switches; without 
 
 test('0.2.2 arch: pre-step steers away from a cooling selection and respects healthy choices', async () => {
   const ctx = fakeCtx()
-  const { pool } = apply(ctx, config)
+  const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   const selections = []
   const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
   // Healthy in-chain selection: respected, no select call.

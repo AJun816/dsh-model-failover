@@ -9,6 +9,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.3] — 2026-11-14
+
+### Fixed — 远期冷却不再被 second-chance 反复探测（"处理失败"循环根治）
+- 事故（16:38）：三账号全因 1310（重置 11-16，还剩两天）冷却后，0.11.2 的 second-chance 每 5 分钟复活一个探测——每次探测都是**必然失败的用户可见错误**（用户反复看到"处理失败"+1310）。
+- 修复：复活仅当剩余冷却 ≤ 15 分钟（窗口将重置/可能已充值，探测才有价值）；远期冷却（周上限还剩数天）直接 fail-fast 不再产生噪声探测。
+- `pool.remaining()` 新增；两处复活点（0.2.2 分支 + legacy 分支）同口径过滤；测试适配新语义，41/41。
+
 ## [0.11.2] — 2026-11-14
 
 ### Fixed — 全链冷却时不再烧重试预算（5/5 同路由烧录事故根治）

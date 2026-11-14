@@ -44,6 +44,14 @@ export function createPool(options: { cooldownMs: number, now?: () => number }):
     return wasCooling
   }
 
+  /** Remaining cooling ms (0 when healthy/expired) — drives whether a
+   *  second-chance probe is worth a visible failure. */
+  function remaining(account: string): number {
+    const hit = cooling.get(account)
+    if (hit === undefined) return 0
+    return Math.max(0, hit.until - now())
+  }
+
   function snapshot(): Record<string, { coolingUntil: number }> {
     const out: Record<string, { coolingUntil: number }> = {}
     for (const [account, { until }] of cooling) {
@@ -52,7 +60,7 @@ export function createPool(options: { cooldownMs: number, now?: () => number }):
     return out
   }
 
-  return { cool, isCooling, recover, revive, snapshot }
+  return { cool, isCooling, recover, revive, remaining, snapshot }
 }
 
 /** The first entry of the chain whose provider is healthy, in chain order. */

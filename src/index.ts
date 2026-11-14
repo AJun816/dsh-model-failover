@@ -61,6 +61,11 @@ export type {
 const NEUTRAL_FIELDS = ['maxTokens', 'temperature'] as const
 /** Minimum spacing between second-chance probes of one provider. */
 const REVIVE_INTERVAL_MS = 5 * 60_000
+/** A second-chance probe is worth one visible failure only when the cooldown
+ *  ends soon (window reset / likely recharge). Far-future caps (GLM 1310
+ *  weekly, reset days away) must NOT be probed — every probe is a guaranteed
+ *  user-visible failure (2026-11-14 16:38 incident). */
+const REVIVABLE_WINDOW_MS = 15 * 60_000
 /** Pause before an instant failover hop; providers burst-limit rapid switches. */
 const HOP_DELAY_MS = 400
 /** Hard caps so the per-agent bookkeeping maps can never grow unbounded. */
@@ -389,6 +394,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           // selection so the NEXT step probes it — recovery without waste.
           const reviveCandidate = group.entries.find((entry) => {
             if (!pool.isCooling(entry.provider)) return false
+            if (pool.remaining(entry.provider) > REVIVABLE_WINDOW_MS) return false // far-future cap: probing is guaranteed failure
             const last = lastRevive.get(entry.provider) ?? Number.NEGATIVE_INFINITY
             return now() - last >= REVIVE_INTERVAL_MS
           })
@@ -451,6 +457,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
         if (nextUp === undefined && used <= group.entries.length + 1) {
           const candidate = group.entries.find((entry) => {
             if (!pool.isCooling(entry.provider)) return false
+            if (pool.remaining(entry.provider) > REVIVABLE_WINDOW_MS) return false // far-future cap: probing is guaranteed failure
             const last = lastRevive.get(entry.provider) ?? Number.NEGATIVE_INFINITY
             return now() - last >= REVIVE_INTERVAL_MS
           })
