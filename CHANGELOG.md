@@ -9,6 +9,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.2] — 2026-11-14
+
+### Fixed — 全链冷却时不再烧重试预算（5/5 同路由烧录事故根治）
+- 事故（11-14 14:33/14:37/14:55 三场）：cn、cn-2 相继 1310 冷却后，cn-3 再撞 1310，无健康替补 → 0.11.1 委托 llm-retry → 同一路由烧满 5 次预算 → 轮次死（用户截图实锤）。
+- 修复：model.select 分支 no-healthy 路径改为 fail-fast（不烧预算）+ second-chance 复活选号（5 分钟节流，下一步自动探测恢复）。
+- 回归测试复现事故场景。40/40。
+
 ## [glm-suite 0.2.1] — 2026-11-01（联网校验修复）
 
 ### Fixed

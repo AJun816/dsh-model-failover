@@ -120,6 +120,35 @@ test('v0.9.10: volatile descriptor config still arms the group (2026-11-02 incid
   assert.equal(out.provider, 'glm-1')
 })
 
+test('v0.11.2: all-cooling 1310 fails fast — no same-route retry burn, second-chance selects revival (2026-11-14 incident)', async () => {
+  // 事故回放：cn/cn-2 已冷却，cn-3 再撞 1310（周上限）。0.11.1 委托 llm-retry
+  // 烧满 5 次预算全打 cn-3 → 轮次死。修复后：当步快速失败（undefined），
+  // 并做 second-chance 复活选号（下一步探测充值/重置的账号）。
+  const ctx = fakeCtx()
+  const selection = { provider: 'zai-coding-cn-3', model: 'glm-5.3' }
+  const agent = { id: 'burn-1', model: { select: (s) => Object.assign(selection, s), current: () => ({ ...selection }) } }
+  let downstreamRan = 0
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, {
+    groups: [{ id: 'glm-pool', entries: [
+      { provider: 'zai-coding-cn', model: 'glm-5.3' },
+      { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+      { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    ] }],
+    activeGroup: 'glm-pool',
+    cooldownMinutes: 3,
+  }, { pool, now: () => 1_000 })
+  pool.cool('zai-coding-cn'); pool.cool('zai-coding-cn-2'); pool.cool('zai-coding-cn-3')
+  const action = await ctx.waterfall('agent/request-error',
+    { agent, turn: 1, step: 1, provider: 'zai-coding-cn-3',
+      failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-16 14:32:13 后可继续使用。"}' } },
+    () => { downstreamRan += 1; return { kind: 'retry' } })
+  assert.equal(action, undefined, 'all-cooling fatal must fail fast, not delegate')
+  assert.equal(downstreamRan, 0, 'llm-retry must NOT run (no 5/5 same-route burn)')
+  assert.ok(ctx.log.info.some((l) => l.includes('second-chance')), 'second-chance revival must be selected: ' + JSON.stringify(ctx.log.info))
+  assert.notEqual(selection.provider, 'zai-coding-cn-3', 'durable selection must move off the dead account')
+})
+
 test('module evaluation writes an external load marker', async () => {
   // 导入即写 <DSH_HOME>/model-failover/load.log（0.9.7 可观测性；测试经 loader 隔离到临时 DSH_HOME）
   const { readFileSync, existsSync } = await import('node:fs')
@@ -588,14 +617,17 @@ test('0.2.2 arch: any provider 429 with a healthy alternative switches; without 
   )
   assert.equal(throttled, undefined, 'provider-side 429 with an alternative must fast-fail with a durable switch')
   assert.deepEqual(selections.map((s) => s.provider), ['glm-2'])
-  // Every account cooling: bounded same-route recovery is all that remains.
+  // Every account cooling (v0.11.2): fail fast + second-chance revival —
+  // delegating would burn llm-retry's budget re-firing the same dead route
+  // (2026-11-14 incident: 5/5 retries on a weekly-capped account).
   for (const entry of config.groups[0].entries) pool.cool(entry.provider)
   const exhausted = await ctx.waterfall(
     'agent/request-error',
-    { agent, turn: 2, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: 'x' } },
+    { agent, turn: 2, step: 1, provider: 'glm-1', failure: { code: 'RATE_LIMIT', status: 429, message: '429 too many requests' } },
     () => 'downstream-retry',
   )
-  assert.equal(exhausted, 'downstream-retry', 'no healthy alternative delegates to downstream recovery')
+  assert.equal(exhausted, undefined, 'no healthy alternative fails fast (no same-route burn)')
+  assert.ok(selections.length >= 2, 'second-chance revival must re-select: ' + JSON.stringify(selections.map(s => s.provider)))
 })
 
 test('0.2.2 arch: pre-step steers away from a cooling selection and respects healthy choices', async () => {
