@@ -299,26 +299,28 @@ test('all entries cooling → second-chance revives the first cooled account (re
   const out = await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
   assert.deepEqual({ provider: out.provider, model: out.model }, { provider: 'seed', model: 'seed-model' })
 
-  // 第一次全冷却失败：按替补顺序复活 glm-1 并重试（探测是否已充值）
+  // 第一次全冷却失败：本次失败的是 glm-1（刚失败不再被探测——2026-11-15 探测风暴
+  // 修复），二次机会复活下一个冷却账号 glm-2 并重试（探测是否已充值）
   const probe = await ctx.waterfall(
     'agent/request-error',
     { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } },
     () => 'default-error',
   )
   assert.deepEqual(probe, { kind: 'retry' })
-  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-1')))
-  // 复活后的请求会重新路由到 glm-1
+  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-2')))
+  // 复活后的请求会重新路由到 glm-2
   const rerouted = await ctx.waterfall('agent/request', { agent, turn: 1, step: 2 }, () => seedConfig)
-  assert.equal(rerouted.provider, 'glm-1')
+  assert.equal(rerouted.provider, 'glm-2')
 
-  // glm-1 仍无额度再次失败 → 重新冷却；二次机会转向下一个账号（glm-1 已被节流）
+  // glm-2 仍无额度再次失败 → 重新冷却；二次机会转向下一个账号（glm-1 刚失败、
+  // glm-2 已被节流）
   const probe2 = await ctx.waterfall(
     'agent/request-error',
-    { agent, turn: 1, step: 2, provider: 'glm-1', failure: { code: 'QUOTA' } },
+    { agent, turn: 1, step: 2, provider: 'glm-2', failure: { code: 'QUOTA' } },
     () => 'default-error',
   )
   assert.deepEqual(probe2, { kind: 'retry' })
-  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-2')))
+  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-3')))
 
   // 持续失败：每个账号每 5 分钟只探测一次，节流耗尽后交回默认错误处理
   let giveUp
@@ -336,8 +338,9 @@ test('all entries cooling → second-chance revives the first cooled account (re
 })
 
 test('cascades through the whole pool one failure at a time', async () => {
+  let clock = Date.now()
   const ctx = fakeCtx()
-  apply(ctx, { ...config, cooldownMinutes: 1 })
+  apply(ctx, { ...config, cooldownMinutes: 10 }, { now: () => clock })
   const agent = { id: 'a1' }
   const seen = []
   for (let i = 0; i < 3; i += 1) {
@@ -350,12 +353,23 @@ test('cascades through the whole pool one failure at a time', async () => {
     )
     if (i < 2) assert.deepEqual(action, { kind: 'retry' })
     else {
-      // 第三个账号失败后全池冷却：二次机会复活链首（可能已被充值）
-      assert.deepEqual(action, { kind: 'retry' })
-      assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-1')))
+      // 第三个账号失败后全池冷却，且 glm-1 数毫秒前刚失败：不再立即探测它
+      // （2026-11-15 探测风暴修复），交回下游默认处理。
+      assert.equal(action, 'default-error')
     }
   }
   assert.deepEqual(seen, ['glm-1', 'glm-2', 'glm-3'])
+
+  // 静默 6 分钟后（无新失败）：二次机会恢复探测链首（可能已被充值）。
+  // 冷却 10 分钟 → 剩余 4 分钟落在 15 分钟复活窗口内；glm-1 最后失败于 6 分钟前。
+  clock += 6 * 60_000
+  const probe = await ctx.waterfall(
+    'agent/request-error',
+    { agent, turn: 2, step: 1, provider: 'glm-3', failure: { code: 'RATE_LIMIT', status: 429 } },
+    () => 'default-error',
+  )
+  assert.deepEqual(probe, { kind: 'retry' })
+  assert.ok(ctx.log.info.some((line) => line.includes('second-chance retry on') && line.includes('glm-1')))
 })
 
 test('separate agents track in-flight entries independently', async () => {

@@ -9,6 +9,17 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.6] — 2026-11-15
+
+### Fixed — second-chance 探测风暴根治（"一直切换失败"事故）
+- 事故（20:26–20:29，用户实锤）：分组仅剩 2 棒且全部真死（zai TIMEOUT + minimax Token Plan 限额），配置 `cooldownMinutes: 3` 使冷却后 `remaining`(3min) 恒小于复活窗口(15min) → 所有冷却账号永远"可复活"；唯一节流是每账号 5 分钟，双账号交替 → 每 2.5 分钟一次必然失败的探测，无任何退避。诊断脚本 `scripts/e2e-diagnose.mjs`（100% 复刻生产配置与故障）实测：90 分钟 36 次用户可见失败。
+- 修复（三层）：
+  1. **刚失败不探测**：失败时间 < REVIVE_INTERVAL(5min) 的账号不作为复活候选（旧逻辑只节流"上次复活"，失败 6 秒后即可再被复活，双账号交替绕过节流）；
+  2. **探测失败指数退避**：复活后 10 分钟内再失败计为一次探测失败，该账号探测间距 ×4（5min→20min→1h20m→5h20m，封顶 6h）；健康服务过则清零；
+  3. **activeGroup 漂移告警**：activeGroup 指向不存在的分组 id 时（本次生产实锤 `glm-pool` vs `main`）打 warn 日志，不再静默回退首组。
+- 修复后同一场景：90 分钟 0 次探测失败；流量静默 ≥5min 后探测仍可恢复（充值探测语义保留，回归测试覆盖）。42/42。
+- 附带修复生产配置（~/.dsh/profiles/desktop）：activeGroup 对齐分组、补回丢失的 HX/JH 两棒（4 棒链）。
+
 ## [0.11.5] — 2026-11-15
 
 ### Fixed — 1310 重复失败指数退避 + 独立 E2E 脚本

@@ -68,6 +68,15 @@ const REVIVE_INTERVAL_MS = 5 * 60_000
 const REVIVABLE_WINDOW_MS = 15 * 60_000
 /** Pause before an instant failover hop; providers burst-limit rapid switches. */
 const HOP_DELAY_MS = 400
+/** Probe spacing ceiling: each failed second-chance probe of one provider
+ *  multiplies its next probe spacing by 4 (5min → 20min → 1h20m → 5h20m),
+ *  capped here. Without this, a fully-exhausted pool with a short configured
+ *  cooldown probes dead accounts forever (the 2026-11-15 "endless switch
+ *  failures" incident: 36 visible failures in 90 minutes with two dead
+ *  accounts alternating every REVIVE_INTERVAL). */
+const PROBE_BACKOFF_CEILING_MS = 6 * 60 * 60_000
+/** A failure within this window after a revive counts as a failed probe. */
+const PROBE_ATTRIB_WINDOW_MS = 10 * 60_000
 /** Hard caps so the per-agent bookkeeping maps can never grow unbounded. */
 const IN_FLIGHT_CAP = 64
 const BUDGET_CAP = 1_000
@@ -208,6 +217,37 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
   const budgets = createBudgets()
   /** Last second-chance revive per provider, throttling probes on fully-cooled pools. */
   const lastRevive = new Map<string, number>()
+  /** Last failure per provider — a provider that JUST failed is never probed. */
+  const lastFailAt = new Map<string, number>()
+  /** Consecutive failed probes per provider — drives exponential probe backoff. */
+  const reviveFails = new Map<string, number>()
+
+  /** Current second-chance probe spacing for one provider (grows per failed probe). */
+  const probeGapMs = (provider: string): number => {
+    const fails = reviveFails.get(provider) ?? 0
+    return Math.min(REVIVE_INTERVAL_MS * 4 ** fails, PROBE_BACKOFF_CEILING_MS)
+  }
+
+  /** Register a failure of one provider: attribute it to a recent probe (steepening
+   *  that provider's backoff) or to a healthy stretch (resetting it). */
+  const noteFailure = (provider: string): void => {
+    lastFailAt.set(provider, now())
+    const revivedAt = lastRevive.get(provider)
+    if (revivedAt !== undefined && now() - revivedAt < PROBE_ATTRIB_WINDOW_MS) {
+      reviveFails.set(provider, (reviveFails.get(provider) ?? 0) + 1)
+    } else {
+      reviveFails.delete(provider) // it had served since the last probe: fresh slate
+    }
+  }
+
+  /** Eligibility shared by both second-chance sites: soon-expiring cooldown,
+   *  honored probe spacing, and no failure in the last probe interval. */
+  const probeEligible = (entry: { provider: string }): boolean => {
+    if (pool.remaining(entry.provider) > REVIVABLE_WINDOW_MS) return false // far-future cap: probing is guaranteed failure
+    if (now() - (lastRevive.get(entry.provider) ?? Number.NEGATIVE_INFINITY) < probeGapMs(entry.provider)) return false
+    if (now() - (lastFailAt.get(entry.provider) ?? Number.NEGATIVE_INFINITY) < REVIVE_INTERVAL_MS) return false
+    return true
+  }
   /** Consecutive GLM 1310 repeats within 24h per provider — drives exponential backoff. */
   const weeklyCapRepeats = new Map<string, number>()
   /** Timestamp of the last 1310 per provider. */
@@ -232,6 +272,16 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
 
     const groupsRaw = valueOf<FailoverGroup[]>(unwrapVolatile(config.groups))
     const groupsValue = Array.isArray(groupsRaw) ? groupsRaw : []
+    const wantedGroupId = String(unwrapVolatile(config.activeGroup) ?? '').trim()
+    if (wantedGroupId !== '' && !groupsValue.some((g) => g.id === wantedGroupId)) {
+      // Config drift: the GUI group list was edited but activeGroup still names a
+      // removed id (2026-11-15: activeGroup "glm-pool" vs the surviving "main").
+      // activeGroupOf silently falls back to the first group — surface it.
+      ctx.logger?.warn?.(
+        'model-failover: activeGroup "%s" matches no configured group (%s) — falling back to "%s"; fix the plugin config to stop the drift',
+        wantedGroupId, groupsValue.map((g) => g.id).join(', ') || 'none', groupsValue[0]?.id ?? '-',
+      )
+    }
     let group: FailoverGroup | undefined = activeGroupOf({ groups: groupsValue, activeGroup: unwrapVolatile(config.activeGroup) })
     if (groupsValue.length === 0 && autoOn) {
       group = { id: 'auto', entries: auto.snapshot() }
@@ -384,6 +434,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           weeklyCapRepeats.delete(failed.provider)
           lastWeeklyCap.delete(failed.provider)
         }
+        noteFailure(failed.provider)
         pool.cool(failed.provider, Math.max(cooldownMs, retryAfter))
 
         // DSH >= 0.2.2: a same-step retry re-fires the step's FIXED route — it
@@ -418,12 +469,8 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           // account, round died). Instead: fail this step fast, and when a
           // cooled entry has not been probed recently, revive it as the durable
           // selection so the NEXT step probes it — recovery without waste.
-          const reviveCandidate = group.entries.find((entry) => {
-            if (!pool.isCooling(entry.provider)) return false
-            if (pool.remaining(entry.provider) > REVIVABLE_WINDOW_MS) return false // far-future cap: probing is guaranteed failure
-            const last = lastRevive.get(entry.provider) ?? Number.NEGATIVE_INFINITY
-            return now() - last >= REVIVE_INTERVAL_MS
-          })
+          const reviveCandidate = group.entries.find((entry) =>
+            pool.isCooling(entry.provider) && probeEligible(entry))
           if (reviveCandidate !== undefined) {
             lastRevive.set(reviveCandidate.provider, now())
             pool.revive(reviveCandidate.provider)
@@ -481,12 +528,8 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
         // the real request itself probe it — success means real quota, a
         // retryable failure simply re-cools it at no extra cost.
         if (nextUp === undefined && used <= group.entries.length + 1) {
-          const candidate = group.entries.find((entry) => {
-            if (!pool.isCooling(entry.provider)) return false
-            if (pool.remaining(entry.provider) > REVIVABLE_WINDOW_MS) return false // far-future cap: probing is guaranteed failure
-            const last = lastRevive.get(entry.provider) ?? Number.NEGATIVE_INFINITY
-            return now() - last >= REVIVE_INTERVAL_MS
-          })
+          const candidate = group.entries.find((entry) =>
+            pool.isCooling(entry.provider) && probeEligible(entry))
           if (candidate !== undefined) {
             lastRevive.set(candidate.provider, now())
             pool.revive(candidate.provider)
