@@ -9,6 +9,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.5] — 2026-11-15
+
+### Fixed — 1310 重复失败指数退避 + 独立 E2E 脚本
+- 残余问题（用户实测反馈）：真死 key（周上限重置在数天后）在 0.11.4 的 15 分钟平顶冷却下每周期被探测一次——选号停其上时用户每 15 分钟看到一次失败。
+- 修复：1310 重复失败（24h 内）指数退避 15min→1h→6h→重置时刻；地板账号首次仍 15 分钟快速回血；非 1310 失败或超 24h 重置阶梯。
+- `scripts/e2e-failover.mjs`：完全离线的端到端验证脚本（不调真实 API、不碰任何会话），6 场景 12 断言，可对仓库构建或已部署实体运行——测试不再消耗 agent 轮次。
+
 ## [0.11.4] — 2026-11-14
 
 ### Fixed — 1310 冷却封顶一个探测周期（额度地板误杀根治）

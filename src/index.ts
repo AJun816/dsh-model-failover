@@ -208,6 +208,10 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
   const budgets = createBudgets()
   /** Last second-chance revive per provider, throttling probes on fully-cooled pools. */
   const lastRevive = new Map<string, number>()
+  /** Consecutive GLM 1310 repeats within 24h per provider — drives exponential backoff. */
+  const weeklyCapRepeats = new Map<string, number>()
+  /** Timestamp of the last 1310 per provider. */
+  const lastWeeklyCap = new Map<string, number>()
   const auto = startAutoDiscovery(ctx, config)
 
   /**
@@ -359,15 +363,26 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           finiteOr(failure?.providerRetryAfterMs, 0),
           retryAfterFromMessage(failureMessage, now()),
         )
-        // GLM 1310 weekly-cap cooldown is CAPPED at one probe cycle: the cap
-        // has a quota-floor effect (account serves normal requests but not
-        // huge contexts), so cooling until the multi-day reset mis-classifies
-        // live accounts as dead (2026-11-14: cn/cn-2 fully usable, yet cooled
-        // for two days; selections drifted onto the genuinely dead account).
-        // A short cooldown lets floor-effect accounts recover in minutes while
-        // truly dead ones cost one fail-fast probe per cycle.
+        // GLM 1310 weekly-cap cooldown starts at one probe cycle and backs off
+        // exponentially on repeat failures. The cap has a quota-floor effect
+        // (account serves normal requests but not huge contexts), so cooling
+        // until the multi-day reset mis-classifies live accounts as dead
+        // (2026-11-14: cn/cn-2 fully usable, yet cooled for two days). A short
+        // FIRST cooldown lets floor-effect accounts recover in minutes; a
+        // GENUINELY dead account (tiny probe also 1310) repeats, and each
+        // repeat multiplies the cooldown (15min → 1h → 6h → reset), so a
+        // selection parked on a dead key costs at most a few visible failures
+        // per day instead of one every probe cycle.
         if (/"code"\s*:\s*"1310"|7 天使用上限|7-day usage limit/i.test(failureMessage)) {
-          retryAfter = Math.min(retryAfter, REVIVABLE_WINDOW_MS)
+          const last = lastWeeklyCap.get(failed.provider) ?? 0
+          const repeats = now() - last < 24 * 60 * 60_000 ? (weeklyCapRepeats.get(failed.provider) ?? 0) + 1 : 1
+          weeklyCapRepeats.set(failed.provider, repeats)
+          lastWeeklyCap.set(failed.provider, now())
+          const backoff = Math.min(REVIVABLE_WINDOW_MS * 4 ** (repeats - 1), retryAfter)
+          retryAfter = backoff
+        } else {
+          weeklyCapRepeats.delete(failed.provider)
+          lastWeeklyCap.delete(failed.provider)
         }
         pool.cool(failed.provider, Math.max(cooldownMs, retryAfter))
 
