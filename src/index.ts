@@ -90,6 +90,12 @@ const FALLBACK_HOPS_PER_STEP = 2
 const PROBE_CACHE_MS = 5 * 60_000
 /** Total budget for walking the chain with probes; past it, trust chain order. */
 const VERIFY_BUDGET_MS = 6_000
+/** How often the supervisor re-checks live agents while the pool is degraded. */
+const SUPERVISION_INTERVAL_MS = 60_000
+/** Delay before the first supervision pass, letting the host populate agents. */
+const SUPERVISION_START_DELAY_MS = 1_500
+/** Delay before re-supervising after a failure (the agent may be mid-turn). */
+const SUPERVISION_FAILURE_DELAY_MS = 500
 
 /**
  * The provider/model the agent loop actually fixed for this request: the
@@ -220,6 +226,7 @@ export function apply(ctx: ListenerContext, config: Config = {}, internals: Appl
 
 /** Minimal ambient timer declaration: the host is Node, but src compiles without node types. */
 declare function setTimeout(handler: () => void, timeout: number): unknown
+declare function clearTimeout(handle: unknown): void
 
 /** Resolve after ms; a rejected-interruption is impossible with a plain handler. */
 function sleep(ms: number): Promise<void> {
@@ -351,6 +358,20 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       Object.keys(pool.snapshot()).length > 0
       || group.entries.some((entry) => pool.pendingReset(entry.provider) > now())
 
+    // ---- Background supervision -------------------------------------------
+    // The host fixes a step's route before agent/pre-step runs (installed
+    // agent-loop throws if agent/request proposes another route), so a stale
+    // selection can only be repaired BEFORE the next message. While the pool is
+    // degraded, re-route live agents whose selection is cooling/marked so the
+    // next turn assembles on a healthy account (2026-11-16 14:48: restart with
+    // a dead selection cost one failed message; supervision prevents exactly
+    // that).
+    const agentsService = ctx.agents
+      ?? (typeof ctx.get === 'function' ? ctx.get('agents') as ListenerContext['agents'] : undefined)
+    let supervisionTimer: unknown
+    let supervisionDisposed = false
+    let supervising = false
+
     /** Take one provider out of rotation after a real (or probe) failure. */
     const penalize = (provider: string, failure: LlmFailure | undefined): void => {
       const message = String((failure as { message?: string } | null | undefined)?.message ?? '')
@@ -359,6 +380,71 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       noteFailure(provider)
       pool.cool(provider, Math.max(cooldownMs, stated))
       prober.forget(provider)
+    }
+
+    /** Re-route every live idle agent whose current selection is out of rotation. */
+    const supervise = async (): Promise<void> => {
+      if (supervising || supervisionDisposed) return
+      if (!probeOnDegraded || !degraded()) return
+      const list = agentsService?.list?.() ?? []
+      supervising = true
+      try {
+        for (const agent of list) {
+          try {
+            const model = agent.model
+            if (model === undefined || typeof model.select !== 'function') continue
+            const current = model.current()
+            if (current === undefined) continue
+            if (!group.entries.some((entry) => entry.provider === current.provider)) continue
+            const unavailable = pool.isCooling(current.provider) || pool.pendingReset(current.provider) > now()
+            // Unknown health is worth one probe while the pool is degraded: a
+            // fresh process has no verdict for the current selection yet.
+            if (!unavailable && prober.recentOk(current.provider)) continue
+            // Verify the CURRENT selection first; only a failing verdict moves
+            // the agent down the chain (never reorder a healthy choice).
+            const preferred = unavailable
+              ? (firstHealthyEntry(group.entries, pool) ?? fallbackEntry())
+              : { provider: current.provider, model: current.model }
+            const verified = await chooseVerified(undefined, preferred)
+            if (verified === undefined) continue
+            if (verified.provider === current.provider && verified.model === current.model) continue
+            model.select({ provider: verified.provider, model: verified.model })
+            note(
+              { agent } as WaterfallPayload, current.provider, verified.provider,
+              'supervision: selection was out of rotation', 'probe',
+            )
+            ctx.logger?.info?.(
+              'model-failover: supervision moved %s/%s → %s/%s before the next message',
+              current.provider, current.model, verified.provider, verified.model,
+            )
+          } catch (error) {
+            ctx.logger?.warn?.('model-failover: supervision of one agent failed: %o', error)
+          }
+        }
+      } finally {
+        supervising = false
+      }
+    }
+
+    /** Supervision is only possible when the host exposes the agents service. */
+    const supervisionAvailable = typeof agentsService?.list === 'function'
+
+    /** Run supervision soon; keep a slow, non-blocking loop alive while degraded. */
+    const scheduleSupervision = (delayMs: number, force = false): void => {
+      if (supervisionDisposed || !supervisionAvailable) return
+      if (supervisionTimer !== undefined) {
+        if (!force) return
+        clearTimeout(supervisionTimer)
+        supervisionTimer = undefined
+      }
+      const handle = setTimeout(() => {
+        supervisionTimer = undefined
+        void supervise().catch(() => { /* supervision is advisory */ })
+        if (!supervisionDisposed && degraded()) scheduleSupervision(SUPERVISION_INTERVAL_MS)
+      }, delayMs) as { unref?: () => void }
+      // Never hold the host process (or a test runner) open for a background check.
+      handle.unref?.()
+      supervisionTimer = handle
     }
 
     /**
@@ -540,6 +626,10 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
           done()
           return next()
         }
+
+        // A fresh failure can unlock a better durable selection: re-supervise
+        // idle agents shortly after this turn settles.
+        scheduleSupervision(SUPERVISION_FAILURE_DELAY_MS, true)
 
         const failureMessage = String((failure as { message?: string } | null | undefined)?.message ?? '')
         const statedRetryAfter = Math.max(
@@ -740,7 +830,14 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       }
     }, { prepend: true })
 
+    // First pass after wiring: a restarted host often still carries a stale
+    // (capped) selection from the previous process — repair it before the user
+    // sends anything.
+    if (probeOnDegraded) scheduleSupervision(internals.supervisionStartDelayMs ?? SUPERVISION_START_DELAY_MS)
+
     return () => {
+      supervisionDisposed = true
+      if (supervisionTimer !== undefined) { clearTimeout(supervisionTimer); supervisionTimer = undefined }
       offRequest()
       offPreStep()
       offRequestError()

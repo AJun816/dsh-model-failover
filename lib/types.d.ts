@@ -62,6 +62,12 @@ export interface ListenerContext {
     }): () => void;
     /** cordis effect: re-runs the factory when volatile config it reads changes. */
     effect?: (factory: () => () => void, label?: string) => void;
+    /** Live agents (ctx.agents service); the supervisor re-routes idle selections. */
+    agents?: {
+        list?(): readonly SupervisedAgent[];
+    };
+    /** Cordis service lookup (used when a service is not part of `inject`). */
+    get?(name: string): unknown;
     /** The live LLM registry (declared via inject); drives auto-discovery. */
     llm?: {
         listProviders(): readonly {
@@ -93,6 +99,14 @@ export interface AgentModelFace {
         reasoningEffort?: string;
     }): void;
 }
+/** One live agent the background supervisor may re-route (structural subset of Agent). */
+export interface SupervisedAgent {
+    id?: unknown;
+    session?: {
+        id?: unknown;
+    };
+    model?: AgentModelFace;
+}
 /** Waterfall payload shapes this plugin reads (structural, upgrade-tolerant). */
 export interface WaterfallPayload {
     agent?: {
@@ -121,6 +135,8 @@ export interface ApplyInternals {
     now?: () => number;
     /** Override path for the plugin's switch log (tests). */
     logFile?: string;
+    /** Override the first supervision delay (tests). */
+    supervisionStartDelayMs?: number;
 }
 /** Durable account-health state: cool downs plus provider-stated resets. */
 export interface CooldownState {

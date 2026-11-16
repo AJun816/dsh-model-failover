@@ -958,22 +958,50 @@ test('probing can be disabled and is skipped when the host has no stream', async
   assert.deepEqual(selections2, [{ provider: 'glm-2', model: 'glm-4.7' }], 'no stream capability degrades to chain order')
 })
 
-test('probe reads the host chunk protocol: a terminal error finish is a failure, not health', async () => {
-  const stream = (options) => (async function* () {
+test('supervision re-routes an idle agent off a capped selection before the next message', async () => {
+  const ctx = fakeCtx()
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: (options) => (async function* () {
     if (options.provider === 'glm-2') {
-      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'QUOTA', status: 402, message: 'Insufficient Balance' } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}' } } }
       return
     }
     yield { type: 'text-delta', index: 0, text: 'p' }
-    yield { type: 'finish', reason: { kind: 'stop' } }
-  })()
-  const ctx = ctxWithStream(stream)
-  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
-  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000 })
+  })() }
   const selections = []
-  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
-  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
-  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } }, () => undefined)
-  assert.equal(pool.isCooling('glm-2'), true, 'the error finish must cool the probed account')
-  assert.deepEqual(selections, [{ provider: 'glm-3', model: 'glm-4.7' }])
+  const agent = { id: 'live-1', session: { id: 'live-1' }, model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 5 })
+  pool.markReset('glm-2', 10_000)
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], 'an idle agent must be moved off the capped account')
+})
+
+test('supervision verifies an unknown healthy selection once and keeps it', async () => {
+  const ctx = fakeCtx()
+  let probes = 0
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: () => { probes += 1; return (async function* () { yield { type: 'text-delta', index: 0, text: 'p' } })() } }
+  const selections = []
+  const agent = { id: 'live-2', session: { id: 'live-2' }, model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 5 })
+  pool.cool('glm-3', 60_000) // degraded: another account is out
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.deepEqual(selections, [], 'a healthy selection must not be moved')
+  assert.equal(probes, 1, 'the unknown selection is verified exactly once during degradation')
+})
+
+test('supervision stays completely quiet while the pool is healthy', async () => {
+  const ctx = fakeCtx()
+  let probes = 0
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: () => { probes += 1; return (async function* () { yield { type: 'text-delta', index: 0, text: 'p' } })() } }
+  const selections = []
+  const agent = { id: 'live-3', session: { id: 'live-3' }, model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 5 })
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.deepEqual(selections, [])
+  assert.equal(probes, 0, 'no probes while healthy')
 })

@@ -9,6 +9,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.13.0] — 2026-11-16
+
+### Added — 启动/空闲巡检（后台换号，用户发消息前完成）
+- 事故（14:48 复查）：宿主 0.12.0 已加载。安装版 `dsh-agent-loop` 在 `preStep()` 里**先**捕获 `selection` 并完成提示装配，`agent/pre-step` 返回的 `decision.selection` 会被宿主覆盖；`agent/request` 若提出不同路由，`prepareRequest()` 直接抛错（`agent/request proposed ... after step preparation fixed ...`）。结论：**同一回合内无法改道**，一条消息最多验证一个账号；若重启后会话仍带着已到期选择，这条消息必然失败一次。
+- 方案：用 `ctx.agents.list()` 后台巡检活动会话——启动 1.5s 后、每次失败后 0.5s、降级期每 60s，检查每个在线 agent 的当前选择：已冷却/被供应商标记未到期 → 直接换到链上已验证账号；健康但"未知"→ 用 1-token 探针验证一次并缓存 5 分钟；健康则不动。定时器 `unref()`，不阻塞宿主/测试退出。
+- 效果：重启后**在你发消息之前**就把死号换掉（14:48 场景的根治），且不会打乱用户健康的手动选择。
+- 诊断脚本新增场景 E（启动巡检：从 zai-coding-cn-2 迁到 zai-coding-cn，对照组仍停在死号）；测试 57/57。
+
 ## [0.12.0] — 2026-11-16
 
 ### Added — 替补链预检（`probeOnDegraded`）：一次探针替代逐个试错

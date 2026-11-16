@@ -255,6 +255,48 @@ async function checkProbeChain() {
   return { failures, verified, blind }
 }
 
+// ---- 场景 E：启动巡检（0.13.0）----------------------------------------
+// 14:48 事故：重启后会话仍带着已到期的选择，用户发消息先失败一次。期望：
+// 启动后巡检活动会话，在用户发消息前就把选择换成已验证可用的账号。
+async function checkSupervision() {
+  const failures = []
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    { provider: 'deepseek-account', model: 'deepseek-flash' },
+  ] }], cooldownMinutes: 3 }
+  const build = async (probeOnDegraded) => {
+    const selection = { provider: 'zai-coding-cn-2', model: 'glm-5.3' }
+    const agent = { id: 'live-session', session: { id: 'live-session' }, model: {
+      select: (s) => { Object.assign(selection, s) }, current: () => selection,
+    } }
+    const ctx = makeCtx()
+    ctx.llm.stream = (options) => (async function* () {
+      if (options.provider === 'zai-coding-cn-2') {
+        yield { type: 'finish', reason: { kind: 'error', failure: {
+          code: 'RATE_LIMIT', status: 429,
+          message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}',
+        } } }
+        return
+      }
+      yield { type: 'text-delta', index: 0, text: 'p' }
+    })()
+    ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
+    const pool = createPool({ cooldownMs: 3 * 60_000, now: () => Date.now() })
+    apply(ctx, { ...CHAIN, probeOnDegraded }, { pool, now: () => Date.now(), logFile, supervisionStartDelayMs: 5 })
+    pool.markReset('zai-coding-cn-2', Date.parse('2026-11-17T16:11:05+08:00'))
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    return selection
+  }
+  const supervised = await build(true)
+  if (supervised.provider === 'zai-coding-cn-2') failures.push('E1 启动巡检后仍停留在已到期账号')
+  if (!CHAIN.groups[0].entries.some((e) => e.provider === supervised.provider)) failures.push('E2 巡检结果不在替补链内：' + supervised.provider)
+  const blind = await build(false)
+  if (blind.provider !== 'zai-coding-cn-2') failures.push('E3 关闭预检/巡检时应保持原选择（对照）')
+  return { failures, supervised, blind }
+}
+
 const handoffFailures = await checkQuotaExpiryHandoff()
 console.log('\n=== 场景 B：额度到期自动切换（ACCOUNT_QUOTA） ===')
 for (const f of handoffFailures) console.log('  ❌ ' + f)
@@ -264,6 +306,13 @@ const restartFailures = await checkRestartRecovery()
 console.log('\n=== 场景 C：重启后不重复踩已知死号 ===')
 for (const f of restartFailures) console.log('  ❌ ' + f)
 console.log(restartFailures.length === 0 ? '  ✅ 重置时间持久化，重启后预检直接落到可用账号' : `  ❌ ${restartFailures.length} 项断言失败`)
+
+const supervision = await checkSupervision()
+console.log('\n=== 场景 E：启动巡检（用户发消息前换号） ===')
+for (const f of supervision.failures) console.log('  ❌ ' + f)
+console.log(supervision.failures.length === 0
+  ? `  ✅ 启动即从 ${supervision.blind.provider} 迁到 ${supervision.supervised.provider}（对照组仍停在死号）`
+  : `  ❌ ${supervision.failures.length} 项断言失败`)
 
 const probeChain = await checkProbeChain()
 console.log('\n=== 场景 D：替补链预检（1-token 探针） ===')
@@ -282,6 +331,7 @@ if (mode === '--expect-thrash') {
   console.log(bounded ? '结论: ✅ 探测有界（≤8 次/90 分钟，指数退避生效）' : '结论: ❌ 探测仍过于频繁')
   process.exitCode = bounded ? 0 : 1
 } else {
-  process.exitCode = bounded && handoffFailures.length === 0 && restartFailures.length === 0 && probeChain.failures.length === 0 ? 0 : 1
+  process.exitCode = bounded && handoffFailures.length === 0 && restartFailures.length === 0
+    && probeChain.failures.length === 0 && supervision.failures.length === 0 ? 0 : 1
 }
 rmSync(process.env.DSH_HOME, { recursive: true, force: true })
