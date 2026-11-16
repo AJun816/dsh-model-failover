@@ -112,14 +112,56 @@ console.log(`链内切换次数: ${chainSwitches.length}`)
 console.log(`全员冷却 fail-fast 步数: ${stats.failFast}`)
 console.log(`配置漂移检查: activeGroup='${PROD_CONFIG.activeGroup}' 与分组 id [main] 不匹配`)
 
+// ---- 场景 B：账号额度到期（2026-11-16 事故）-----------------------------
+// 生产现场：默认模型 deepseek-account/deepseek-flash 额度耗尽，插件把"链首"当成
+// 失败账号去冷却，真正额度到期的账号从未被拉黑 → 选择原地不动、一直失败。
+// 断言：冷却的必须是真正失败的账号，且下一条选择必须离开它。
+async function checkQuotaExpiryHandoff() {
+  const failures = []
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+  ] }], cooldownMinutes: 30 }
+  const run = async (start, failureCode) => {
+    const ctx = makeCtx()
+    const { pool } = apply(ctx, CHAIN)
+    const selection = { ...start }
+    const agent = { id: 'quota-agent', session: { id: 'quota-session' }, model: {
+      select: (s) => { Object.assign(selection, s) },
+      current: () => selection,
+    } }
+    await dispatch(ctx, 'agent/pre-step', { agent, turn: 1, step: 1, modelSelection: selection }, async () => ({ kind: 'enter' }))
+    await dispatch(ctx, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({ ...start }))
+    await dispatch(ctx, 'agent/request-error', { agent, turn: 1, step: 1, provider: start.provider, failure: { code: failureCode } }, async () => undefined)
+    return { cooled: Object.keys(pool.snapshot()), selection }
+  }
+  // B1：手动选择链内第二棒后额度到期
+  const b1 = await run({ provider: 'zai-coding-cn-2', model: 'glm-5.3' }, 'ACCOUNT_QUOTA')
+  if (!b1.cooled.includes('zai-coding-cn-2')) failures.push('B1 未冷却真正失败的 zai-coding-cn-2（冷却了 ' + b1.cooled.join(',') + '）')
+  if (b1.cooled.includes('zai-coding-cn')) failures.push('B1 误伤健康链首 zai-coding-cn')
+  if (b1.selection.provider === 'zai-coding-cn-2') failures.push('B1 额度到期后仍停留在死号 zai-coding-cn-2')
+  // B2：链外默认账号（deepseek-account）额度到期
+  const b2 = await run({ provider: 'deepseek-account', model: 'deepseek-flash' }, 'ACCOUNT_QUOTA')
+  if (!b2.cooled.includes('deepseek-account')) failures.push('B2 未冷却链外失败账号 deepseek-account')
+  if (!CHAIN.groups[0].entries.some((e) => e.provider === b2.selection.provider)) failures.push('B2 额度到期后未交棒给替补链')
+  return failures
+}
+
+const handoffFailures = await checkQuotaExpiryHandoff()
+console.log('\n=== 场景 B：额度到期自动切换（ACCOUNT_QUOTA） ===')
+for (const f of handoffFailures) console.log('  ❌ ' + f)
+console.log(handoffFailures.length === 0 ? '  ✅ 真实失败账号被冷却，选择已交棒（B1/B2）' : `  ❌ ${handoffFailures.length} 项断言失败`)
+
 const mode = process.argv[2] ?? ''
+const bounded = secondChance.length <= 8
 if (mode === '--expect-thrash') {
   const thrash = secondChance.length > 10
   console.log(thrash ? '结论: ❌ 复现"一直切换失败"——探测风暴（>10 次/90 分钟）' : '结论: ✅ 未复现探测风暴')
   process.exitCode = thrash ? 1 : 0
 } else if (mode === '--expect-bounded') {
-  const bounded = secondChance.length <= 8
   console.log(bounded ? '结论: ✅ 探测有界（≤8 次/90 分钟，指数退避生效）' : '结论: ❌ 探测仍过于频繁')
   process.exitCode = bounded ? 0 : 1
+} else {
+  process.exitCode = bounded && handoffFailures.length === 0 ? 0 : 1
 }
 rmSync(process.env.DSH_HOME, { recursive: true, force: true })

@@ -9,6 +9,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.7] — 2026-11-16
+
+### Fixed — DSH 0.2.2 固定路由下失败账号归属错误（"额度到期后无法自动切换"事故）
+- 事故（用户实测 14:14）：默认模型 `deepseek-account/deepseek-flash` 额度到期后，插件把链首 `zai-coding-cn` 当成失败账号冷却，真正额度到期的 `deepseek-account` 从未被拉黑；手动选择链内第二棒时更糟——冷却了链首、下一步仍选中死号，选择原地不动。
+- 根因：`agent/request` 的 0.2.2 固定路由分支记录 in-flight 路由时用了"链首健康条目"而非本步真实固定路由；`agent/request-error` 据此冷却了错误账号，`agent/pre-step` 又认为当前选择健康而不再转移 → 额度到期的账号永远留在选择上。
+- 修复：0.2.2 分支按本步真实路由记账（resolved 配置，异常时回退 modelSelection / `agent.model.current()`）；新增防御——绝不把刚失败的同一路由再次选为下一棒。
+- 回归：新增 manual-choice（手动选链内第二棒）与 off-chain default（链外 deepseek-account）两条用例；`scripts/e2e-diagnose.mjs` 新增场景 B（B1/B2 自动断言冷却对象与交棒结果）。
+- 配置：desktop / web 两个 profile 的替补链尾加入 `deepseek-account/deepseek-flash` 作为兜底。
+
 ## [0.11.6] — 2026-11-15
 
 ### Fixed — second-chance 探测风暴根治（"一直切换失败"事故）

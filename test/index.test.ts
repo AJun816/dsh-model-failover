@@ -669,12 +669,39 @@ test('0.2.2 arch: agent/request passes the fixed selection through unchanged', a
   assert.equal(selections.length, 0)
 })
 
+test('0.2.2 arch: tracks the ACTUAL fixed route, not the chain head (manual model choice)', async () => {
+  const ctx = fakeCtx()
+  const { pool } = apply(ctx, config)
+  const selections = []
+  // 用户手动选择了链内第二棒（非链首）
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  const resolved = { provider: 'glm-2', model: 'glm-4.7' }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => resolved)
+  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, provider: 'glm-2', failure: { code: 'QUOTA', status: 402 } }, () => undefined)
+  assert.deepEqual(Object.keys(pool.snapshot()), ['glm-2'], '真正失败的账号必须进冷却，绝不能误伤链首')
+  assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], '死号之后必须切到健康账号')
+})
+
+test('0.2.2 arch: off-chain default provider (deepseek-account) cools itself and hands off to the chain', async () => {
+  const ctx = fakeCtx()
+  const { pool } = apply(ctx, config)
+  const selections = []
+  // 默认模型是链外的 deepseek-account（2026-11-16 生产配置）
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }), select: (s) => selections.push(s) } }
+  const resolved = { provider: 'deepseek-account', model: 'deepseek-flash' }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => resolved)
+  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, provider: 'deepseek-account', failure: { code: 'QUOTA', status: 402, message: 'Insufficient Balance' } }, () => undefined)
+  assert.deepEqual(Object.keys(pool.snapshot()), ['deepseek-account'], '链外账号额度耗尽也必须被冷却')
+  assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], '链外账号失败后由替补链接手')
+})
+
 test('0.2.2 arch: fatal quota fails the step fast with the next account selected', async () => {
   const ctx = fakeCtx()
   apply(ctx, config)
   const selections = []
   const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
-  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  // 真实 0.2.2 宿主返回的 resolved 路由就是本步固定路由（链路身份以此为准）
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
   const action = await ctx.waterfall(
     'agent/request-error',
     { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA', status: 402 } },
@@ -689,7 +716,7 @@ test('0.2.2 arch: any provider 429 with a healthy alternative switches; without 
   const { pool } = apply(ctx, { ...config, cooldownMinutes: 1 })
   const selections = []
   const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
-  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => seedConfig)
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
   // GLM 1302 account-rate-throttle: same-route backoff deepens it — must switch.
   const throttled = await ctx.waterfall(
     'agent/request-error',
