@@ -28,7 +28,7 @@
 
 import type {
   AccountPool, ApplyInternals, Config, FailoverEntry, FailoverGroup, LlmCallConfig, LlmFailure,
-  ListenerContext, RequestErrorAction, SwitchRecord, WaterfallPayload,
+  ListenerContext, RequestErrorAction, SupervisedAgent, SwitchRecord, WaterfallPayload,
 } from './types.js'
 import { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
 import { createPool, firstHealthyEntry } from './pool.js'
@@ -96,6 +96,8 @@ const SUPERVISION_INTERVAL_MS = 60_000
 const SUPERVISION_START_DELAY_MS = 1_500
 /** Delay before re-supervising after a failure (the agent may be mid-turn). */
 const SUPERVISION_FAILURE_DELAY_MS = 500
+/** Debounce before verifying a freshly selected model (the user may still be picking). */
+const SELECTION_VERIFY_DELAY_MS = 250
 
 /**
  * The provider/model the agent loop actually fixed for this request: the
@@ -391,6 +393,40 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       prober.forget(provider)
     }
 
+    /** Verify one agent's current selection; move it only when it cannot serve. */
+    const verifyOneAgent = async (agent: SupervisedAgent): Promise<void> => {
+      const model = agent.model
+      if (model === undefined || typeof model.select !== 'function') return
+      const current = model.current()
+      if (current === undefined) return
+      if (!group.entries.some((entry) => entry.provider === current.provider)) return
+      const unavailable = pool.isCooling(current.provider) || pool.pendingReset(current.provider) > now()
+      if (!unavailable) {
+        // A fresh manual pick is unverified: one probe decides whether it can
+        // serve at all (never move a healthy choice — just confirm it).
+        if (prober.recentOk(current.provider)) return
+        const verdict = await prober.probe({ provider: current.provider, model: current.model })
+        if (verdict.ok) return
+        penalize(current.provider, verdict.failure)
+        ctx.logger?.info?.(
+          'model-failover: selection %s/%s failed its probe (%s) — moving it',
+          current.provider, current.model, classifyFailure(verdict.failure),
+        )
+      }
+      const verified = await chooseVerified(current.provider, firstHealthyEntry(group.entries, pool) ?? fallbackEntry())
+      if (verified === undefined) return
+      if (verified.provider === current.provider && verified.model === current.model) return
+      model.select({ provider: verified.provider, model: verified.model })
+      note(
+        { agent } as WaterfallPayload, current.provider, verified.provider,
+        'supervision: selection was out of rotation', 'probe',
+      )
+      ctx.logger?.info?.(
+        'model-failover: supervision moved %s/%s → %s/%s before the next message',
+        current.provider, current.model, verified.provider, verified.model,
+      )
+    }
+
     /** Re-route every live idle agent whose current selection is out of rotation. */
     const supervise = async (): Promise<void> => {
       if (supervising || supervisionDisposed) return
@@ -400,32 +436,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       try {
         for (const agent of list) {
           try {
-            const model = agent.model
-            if (model === undefined || typeof model.select !== 'function') continue
-            const current = model.current()
-            if (current === undefined) continue
-            if (!group.entries.some((entry) => entry.provider === current.provider)) continue
-            const unavailable = pool.isCooling(current.provider) || pool.pendingReset(current.provider) > now()
-            // Unknown health is worth one probe while the pool is degraded: a
-            // fresh process has no verdict for the current selection yet.
-            if (!unavailable && prober.recentOk(current.provider)) continue
-            // Verify the CURRENT selection first; only a failing verdict moves
-            // the agent down the chain (never reorder a healthy choice).
-            const preferred = unavailable
-              ? (firstHealthyEntry(group.entries, pool) ?? fallbackEntry())
-              : { provider: current.provider, model: current.model }
-            const verified = await chooseVerified(undefined, preferred)
-            if (verified === undefined) continue
-            if (verified.provider === current.provider && verified.model === current.model) continue
-            model.select({ provider: verified.provider, model: verified.model })
-            note(
-              { agent } as WaterfallPayload, current.provider, verified.provider,
-              'supervision: selection was out of rotation', 'probe',
-            )
-            ctx.logger?.info?.(
-              'model-failover: supervision moved %s/%s → %s/%s before the next message',
-              current.provider, current.model, verified.provider, verified.model,
-            )
+            await verifyOneAgent(agent)
           } catch (error) {
             ctx.logger?.warn?.('model-failover: supervision of one agent failed: %o', error)
           }
@@ -437,6 +448,30 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
 
     /** Supervision is only possible when the host exposes the agents service. */
     const supervisionAvailable = typeof agentsService?.list === 'function'
+
+    // A manual model pick is assembled into the step before any plugin hook can
+    // change it, so verify the pick the moment it is recorded. A probe lands in
+    // ~250ms; users need seconds to type, so the next send is normally saved.
+    const selectionTimers = new Map<string, unknown>()
+    const scheduleSelectionVerification = (sessionId: string): void => {
+      if (supervisionDisposed || !supervisionAvailable || !probeOnDegraded) return
+      const existing = selectionTimers.get(sessionId)
+      if (existing !== undefined) clearTimeout(existing)
+      const handle = setTimeout(() => {
+        selectionTimers.delete(sessionId)
+        const agent = (agentsService?.list?.() ?? []).find((candidate) =>
+          String(candidate.session?.id ?? candidate.id ?? '') === sessionId)
+        if (agent === undefined) return
+        void verifyOneAgent(agent).catch(() => { /* verification is advisory */ })
+      }, SELECTION_VERIFY_DELAY_MS) as { unref?: () => void }
+      handle.unref?.()
+      selectionTimers.set(sessionId, handle)
+    }
+    const offSessionEvent = ctx.on('session/event', ((session: { id?: unknown }, event: { type?: unknown }) => {
+      if (event?.type !== 'model/selection') return
+      const id = session?.id
+      if (id !== undefined) scheduleSelectionVerification(String(id))
+    }) as never)
 
     /** Run supervision soon; keep a slow, non-blocking loop alive while degraded. */
     const scheduleSupervision = (delayMs: number, force = false): void => {
@@ -847,6 +882,9 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     return () => {
       supervisionDisposed = true
       if (supervisionTimer !== undefined) { clearTimeout(supervisionTimer); supervisionTimer = undefined }
+      for (const timer of selectionTimers.values()) clearTimeout(timer)
+      selectionTimers.clear()
+      offSessionEvent()
       offRequest()
       offPreStep()
       offRequestError()

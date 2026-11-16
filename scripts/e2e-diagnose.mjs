@@ -297,6 +297,50 @@ async function checkSupervision() {
   return { failures, supervised, blind }
 }
 
+// ---- 场景 F：手动选模型即时校验（0.14.0）-------------------------------
+// 15:12/15:14 事故：用户在模型选择器里挑中已到期的 glm-5.3（zai-2），
+// 2~3 秒后发送；宿主在装配时就用该账号定死路由 → 失败一次。期望：选中后
+// ~250ms 内探针验证，死号立即换成可用账号，用户打字的时间足够完成切换。
+async function checkSelectionVerification() {
+  const failures = []
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    { provider: 'deepseek-account', model: 'deepseek-flash' },
+  ] }], cooldownMinutes: 3 }
+  const build = async (probeOnDegraded) => {
+    const selection = { provider: 'zai-coding-cn-2', model: 'glm-5.3' }
+    const agent = { id: 'pick-session', session: { id: 'pick-session' }, model: {
+      select: (s) => { Object.assign(selection, s) }, current: () => selection,
+    } }
+    const ctx = makeCtx()
+    ctx.llm.stream = (options) => (async function* () {
+      if (options.provider === 'zai-coding-cn-2') {
+        yield { type: 'finish', reason: { kind: 'error', failure: {
+          code: 'RATE_LIMIT', status: 429,
+          message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}',
+        } } }
+        return
+      }
+      yield { type: 'text-delta', index: 0, text: 'p' }
+    })()
+    ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
+    const pool = createPool({ cooldownMs: 3 * 60_000, now: () => Date.now() })
+    apply(ctx, { ...CHAIN, probeOnDegraded }, { pool, now: () => Date.now(), logFile, supervisionStartDelayMs: 60_000 })
+    // 用户选中 zai-2 → 宿主记录 model/selection 事件
+    for (const handler of ctx.listeners.get('session/event') ?? []) handler({ id: 'pick-session' }, { type: 'model/selection' })
+    await new Promise((resolve) => setTimeout(resolve, 450))
+    return { selection, pool }
+  }
+  const picked = await build(true)
+  if (picked.selection.provider === 'zai-coding-cn-2') failures.push('F1 选中死号后未被即时换走')
+  if (!picked.pool.isCooling('zai-coding-cn-2')) failures.push('F2 死号未被冷却')
+  const off = await build(false)
+  if (off.selection.provider !== 'zai-coding-cn-2') failures.push('F3 关闭预检时应保持用户选择（对照）')
+  return { failures, picked, off }
+}
+
 const handoffFailures = await checkQuotaExpiryHandoff()
 console.log('\n=== 场景 B：额度到期自动切换（ACCOUNT_QUOTA） ===')
 for (const f of handoffFailures) console.log('  ❌ ' + f)
@@ -306,6 +350,13 @@ const restartFailures = await checkRestartRecovery()
 console.log('\n=== 场景 C：重启后不重复踩已知死号 ===')
 for (const f of restartFailures) console.log('  ❌ ' + f)
 console.log(restartFailures.length === 0 ? '  ✅ 重置时间持久化，重启后预检直接落到可用账号' : `  ❌ ${restartFailures.length} 项断言失败`)
+
+const selectionPick = await checkSelectionVerification()
+console.log('\n=== 场景 F：手动选模型即时校验 ===')
+for (const f of selectionPick.failures) console.log('  ❌ ' + f)
+console.log(selectionPick.failures.length === 0
+  ? `  ✅ 选中死号后即迁到 ${selectionPick.picked.selection.provider}（对照仍停在 zai-coding-cn-2）`
+  : `  ❌ ${selectionPick.failures.length} 项断言失败`)
 
 const supervision = await checkSupervision()
 console.log('\n=== 场景 E：启动巡检（用户发消息前换号） ===')
@@ -332,6 +383,7 @@ if (mode === '--expect-thrash') {
   process.exitCode = bounded ? 0 : 1
 } else {
   process.exitCode = bounded && handoffFailures.length === 0 && restartFailures.length === 0
-    && probeChain.failures.length === 0 && supervision.failures.length === 0 ? 0 : 1
+    && probeChain.failures.length === 0 && supervision.failures.length === 0
+    && selectionPick.failures.length === 0 ? 0 : 1
 }
 rmSync(process.env.DSH_HOME, { recursive: true, force: true })

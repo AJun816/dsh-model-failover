@@ -9,6 +9,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.14.0] — 2026-11-16
+
+### Added — 手动选模型即时校验（补上"选完就发"的窗口）
+- 事故（15:12/15:14，用户实测）：在模型选择器里选中已到期的 zai-coding-cn-2（glm-5.3，11-17 恢复），2~3 秒后发送"测试"；宿主在提示装配时就把该账号定死为本回合路由 → 必然失败一次，插件只能在失败后切换。会话事件序列铁证：`15:12:49 选中 zai-2 → 15:12:52 发送 → request/header=zai-2 → 1310`；`15:13:34 选中 zai-1 → 成功`；`15:13:58 又选 zai-2 → 15:14:00 发送 → 再失败`。
+- 修复：监听 `session/event` 中的 `model/selection`，选中后 250ms 防抖发起 1-token 探针；探针失败 → 冷却 + 记录供应商恢复时间 + 立即 `select()` 链上已验证账号（切换记录 `via: probe`）；健康则缓存 5 分钟、不打扰用户选择。探针关闭/不可用时行为不变。
+- 诊断脚本新增场景 F（选中死号后即迁到 zai-coding-cn，对照组仍停在 zai-coding-cn-2）；测试 59/59。
+
 ## [0.13.1] — 2026-11-16
 
 ### Fixed — 加载期异常 `cannot get property "agents" without inject`（插件完全未装载）

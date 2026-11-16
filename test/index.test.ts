@@ -44,6 +44,7 @@ function fakeCtx() {
     return run(0)
   }
   ctx.log = log
+  ctx.listeners = listeners
   return ctx
 }
 
@@ -782,6 +783,27 @@ test('the plugin never reads an undeclared service property (cordis inject guard
     armed = apply(guarded, { ...config, cooldownMinutes: 1 }, { now: () => 1_000, supervisionStartDelayMs: 5 })
   })
   assert.ok(armed?.pool, 'the plugin must still arm without the agents service')
+})
+
+test('a manual model pick is verified immediately and moved off a dead account', async () => {
+  const ctx = fakeCtx()
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: (options) => (async function* () {
+    if (options.provider === 'glm-2') {
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}' } } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'p' }
+  })() }
+  const selections = []
+  const agent = { id: 'sess-1', session: { id: 'sess-1' }, model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 10_000 })
+  // The host commits the user's manual pick as a durable model/selection event.
+  for (const handler of ctx.listeners.get('session/event') ?? []) handler({ id: 'sess-1' }, { type: 'model/selection' })
+  await new Promise((resolve) => setTimeout(resolve, 450)) // verification is debounced 250ms
+  assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], 'a capped manual pick moves to a verified account')
+  assert.equal(pool.isCooling('glm-2'), true)
 })
 
 test('garbage payloads never throw into the waterfalls', async () => {
