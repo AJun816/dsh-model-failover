@@ -514,7 +514,7 @@ function FailoverCard(props: { view?: string, remote?: RemoteFace }): ReactNode 
                   <span style={{ opacity: 0.75 }}>{s.from}</span>
                   <span>→</span>
                   <strong style={{ color: 'var(--dsw-alias-state-warn-label, #b8860b)' }}>{s.to}</strong>
-                  <span style={{ opacity: 0.55 }}>（{s.reason}{s.via === 'fallback' ? ' · 目录兜底' : s.via === 'second-chance' ? ' · 充值探测' : ''}）</span>
+                  <span style={{ opacity: 0.55 }}>（{s.reason}{s.via === 'fallback' ? ' · 目录兜底' : s.via === 'second-chance' ? ' · 充值探测' : s.via === 'probe' ? ' · 替补链预检' : ''}）</span>
                   <span style={{ flex: 1 }} />
                   <span style={{ opacity: 0.5 }}>{new Date(s.at).toLocaleString('zh-CN', { hour12: false })}</span>
                 </li>

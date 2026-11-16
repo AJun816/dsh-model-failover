@@ -28,6 +28,8 @@ export const Config: z<ConfigType> = z.object({
   // user never configured — see CHANGELOG 0.9.2/0.9.3).
   fallbackToCatalog: z.boolean().default(false).volatile(),
   catalogExclude: z.array(z.string()).default([]).volatile(),
+  probeOnDegraded: z.boolean().default(true).volatile(),
+  probeTimeoutMs: z.number().default(2500).volatile(),
   lastSwitches: z.array(z.object({
     at: z.number().required(),
     from: z.string().required(),

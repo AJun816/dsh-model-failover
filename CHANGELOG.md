@@ -9,6 +9,19 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.12.0] — 2026-11-16
+
+### Added — 替补链预检（`probeOnDegraded`）：一次探针替代逐个试错
+- 问题：DSH 0.2.2 每步固定路由，同一回合无法换号，于是每个死号都要吃一条用户可见失败；用户提出「先检查哪个替补可用，再顺位切换」。
+- 方案（对齐 LiteLLM / OpenRouter / one-api 的通行做法：有序链 + 熔断冷却 + 必要时才探测，健康期不探测）：
+  - 仅降级期（有账号冷却或带供应商恢复时间）启用预检，健康期零额外请求；
+  - 用 `ctx.llm.stream()` 发 1-token 探针（`maxTokens: 1`、`temperature: 0`），默认 2500ms 超时；DSH 以终止帧 `finish.reason.kind === 'error'|'aborted'` 报错（不抛异常），据此判定不可用；
+  - 一轮沿链验证：探针失败即冷却 + 记录供应商恢复时间，继续下一棒，直接落到真正可用的账号（切换记录 `via: 'probe'`，GUI 显示「替补链预检」）；
+  - 预检成功缓存 5 分钟；探针不可用（宿主无 `llm.stream`）时行为与此前完全一致；
+  - `agent/pre-step` 同样预检：当前选择已不可用时，进入回合前就迁移，不再先失败一次；
+  - 验证总预算 6s（`VERIFY_BUDGET_MS`），超时按链序继续，绝不卡回合。
+- 诊断脚本新增场景 D：一次失败 + 2 次探针 → 直接落到可用账号；关闭预检则回落链序（对照）。测试 55/55。
+
 ## [0.11.8] — 2026-11-16
 
 ### Fixed — 冷却/恢复时间持久化 + 已知死号预检跳过（重启后不再逐个撞死号）

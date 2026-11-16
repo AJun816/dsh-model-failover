@@ -27,7 +27,7 @@ export interface SwitchRecord {
     from: string;
     to: string;
     reason: string;
-    via: 'chain' | 'fallback' | 'second-chance';
+    via: 'chain' | 'fallback' | 'second-chance' | 'probe';
 }
 /** Plugin configuration; lives in the user's cordis.patch.yml patch layer. */
 export interface Config {
@@ -48,6 +48,10 @@ export interface Config {
     fallbackToCatalog?: boolean;
     /** Provider-name patterns excluded from the auto chain and catalog fallback. Exact id, or prefix with trailing *. */
     catalogExclude?: string[];
+    /** When the pool is degraded, verify candidates with a one-token probe before selecting them (default true). */
+    probeOnDegraded?: boolean;
+    /** Per-probe timeout in ms (default 2500); a hung provider must not stall the step. */
+    probeTimeoutMs?: number;
     /** Recent switch records the GUI card surfaces as a notice (host-written, advisory). */
     lastSwitches?: SwitchRecord[];
 }
@@ -68,6 +72,8 @@ export interface ListenerContext {
             id: string;
             name?: string;
         }[]>;
+        /** Full runtime stream surface; absent on hosts without one (probing is then skipped). */
+        stream?(options: unknown): AsyncIterable<unknown>;
     };
     logger?: {
         info?: (format: string, ...args: unknown[]) => void;

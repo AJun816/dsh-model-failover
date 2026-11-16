@@ -200,6 +200,61 @@ async function checkRestartRecovery() {
   return failures
 }
 
+// ---- 场景 D：替补链预检（0.12.0）--------------------------------------
+// 一次失败后不逐个"试"：用 1-token 探针沿链验证，直接落到真正可用的账号。
+async function checkProbeChain() {
+  const failures = []
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    { provider: 'deepseek-account', model: 'deepseek-flash' },
+  ] }], cooldownMinutes: 3 }
+  const probeCalls = []
+  const stream = (options) => (async function* () {
+    probeCalls.push(options.provider)
+    if (options.provider === 'zai-coding-cn-2') {
+      yield { type: 'finish', reason: { kind: 'error', failure: {
+        code: 'RATE_LIMIT', status: 429,
+        message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}',
+      } } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'p' }
+  })()
+  const run = async (probeOnDegraded) => {
+    const ctx = makeCtx()
+    ctx.llm.stream = stream
+    const pool = createPool({ cooldownMs: 3 * 60_000, now: () => 1794810600000 })
+    apply(ctx, { ...CHAIN, probeOnDegraded }, { pool, now: () => 1794810600000, logFile })
+    const selection = { provider: 'zai-coding-cn', model: 'glm-5.3' }
+    const agent = { id: 'probe-agent', session: { id: 'probe-session' }, model: {
+      select: (s) => { Object.assign(selection, s) }, current: () => selection,
+    } }
+    await dispatch(ctx, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({ provider: 'zai-coding-cn', model: 'glm-5.3' }))
+    await dispatch(ctx, 'agent/request-error', { agent, turn: 1, step: 1, provider: 'zai-coding-cn', failure: {
+      code: 'RATE_LIMIT', status: 429,
+      message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-16 14:32:13 后可继续使用。"}',
+    } }, async () => undefined)
+    return { selection, pool, probes: probeCalls.length }
+  }
+  probeCalls.length = 0
+  const verified = await run(true)
+  if (verified.selection.provider !== 'zai-coding-cn-3') {
+    failures.push('D1 预检后未落到可用账号：' + verified.selection.provider)
+  }
+  if (!verified.pool.isCooling('zai-coding-cn-2')) {
+    failures.push('D2 预检发现的死号 zai-coding-cn-2 未被冷却')
+  }
+  if (verified.probes < 1) failures.push('D3 没有发出探针请求')
+  probeCalls.length = 0
+  const blind = await run(false)
+  if (blind.selection.provider !== 'zai-coding-cn-2') {
+    failures.push('D4 关闭预检时应保持链序行为（实际 ' + blind.selection.provider + '）')
+  }
+  return { failures, verified, blind }
+}
+
 const handoffFailures = await checkQuotaExpiryHandoff()
 console.log('\n=== 场景 B：额度到期自动切换（ACCOUNT_QUOTA） ===')
 for (const f of handoffFailures) console.log('  ❌ ' + f)
@@ -209,6 +264,13 @@ const restartFailures = await checkRestartRecovery()
 console.log('\n=== 场景 C：重启后不重复踩已知死号 ===')
 for (const f of restartFailures) console.log('  ❌ ' + f)
 console.log(restartFailures.length === 0 ? '  ✅ 重置时间持久化，重启后预检直接落到可用账号' : `  ❌ ${restartFailures.length} 项断言失败`)
+
+const probeChain = await checkProbeChain()
+console.log('\n=== 场景 D：替补链预检（1-token 探针） ===')
+for (const f of probeChain.failures) console.log('  ❌ ' + f)
+console.log(probeChain.failures.length === 0
+  ? `  ✅ 一次失败 + ${probeChain.verified.probes} 次探针 → 直接落到 ${probeChain.verified.selection.provider}（链序盲切会落到 ${probeChain.blind.selection.provider}，还需再失败一次）`
+  : `  ❌ ${probeChain.failures.length} 项断言失败`)
 
 const mode = process.argv[2] ?? ''
 const bounded = secondChance.length <= 8
@@ -220,6 +282,6 @@ if (mode === '--expect-thrash') {
   console.log(bounded ? '结论: ✅ 探测有界（≤8 次/90 分钟，指数退避生效）' : '结论: ❌ 探测仍过于频繁')
   process.exitCode = bounded ? 0 : 1
 } else {
-  process.exitCode = bounded && handoffFailures.length === 0 ? 0 : 1
+  process.exitCode = bounded && handoffFailures.length === 0 && restartFailures.length === 0 && probeChain.failures.length === 0 ? 0 : 1
 }
 rmSync(process.env.DSH_HOME, { recursive: true, force: true })

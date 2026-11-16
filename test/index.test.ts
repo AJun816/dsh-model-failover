@@ -873,3 +873,107 @@ test('the newest provider statement wins over an older reset horizon', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+// ---- Preflight probing (0.12.0) ----------------------------------------
+function ctxWithStream(stream) {
+  const ctx = fakeCtx()
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream }
+  return ctx
+}
+
+const okStream = (calls) => (options) => {
+  calls.push(options)
+  return (async function* () { yield { type: 'text-delta', index: 0, text: 'p' } })()
+}
+const failingStream = (calls, failure) => (options) => {
+  calls.push(options)
+  return (async function* () { throw Object.assign(new Error(failure.message ?? 'probe failed'), failure) })()
+}
+
+test('preflight probe resolves the chain in one round instead of one failed turn per account', async () => {
+  const calls = []
+  const stream = (options) => {
+    if (options.provider === 'glm-2') return failingStream(calls, { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}' })(options)
+    return okStream(calls)(options)
+  }
+  const ctx = ctxWithStream(stream)
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000 })
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
+  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } }, () => undefined)
+  assert.deepEqual(Object.keys(pool.snapshot()).sort(), ['glm-1', 'glm-2'], 'the probe discovered and cooled the dead second hop')
+  assert.deepEqual(selections, [{ provider: 'glm-3', model: 'glm-4.7' }], 'the durable selection lands on the verified account')
+  assert.ok(calls.some((c) => c.provider === 'glm-2' && c.maxTokens === 1), 'the probe is one minimal token')
+})
+
+test('preflight probe keeps a healthy selection and verifies the next hop once', async () => {
+  const calls = []
+  const ctx = ctxWithStream(okStream(calls))
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000 })
+  pool.cool('glm-1', 60_000) // degraded: some other account is out
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/pre-step', { agent, turn: 1, step: 1, modelSelection: { provider: 'glm-2', model: 'glm-4.7' } }, () => ({ kind: 'enter' }))
+  assert.deepEqual(selections, [], 'a verified healthy selection is respected')
+  assert.deepEqual(calls.map((c) => c.provider), ['glm-2'])
+})
+
+test('preflight probe steers away from a selection that no longer answers', async () => {
+  const calls = []
+  const stream = (options) => options.provider === 'glm-2'
+    ? failingStream(calls, { code: 'QUOTA', status: 402 })(options)
+    : okStream(calls)(options)
+  const ctx = ctxWithStream(stream)
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000 })
+  pool.cool('glm-1', 60_000)
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/pre-step', { agent, turn: 1, step: 1, modelSelection: { provider: 'glm-2', model: 'glm-4.7' } }, () => ({ kind: 'enter' }))
+  assert.deepEqual(selections, [{ provider: 'glm-3', model: 'glm-4.7' }])
+  assert.equal(pool.isCooling('glm-2'), true)
+})
+
+test('probing can be disabled and is skipped when the host has no stream', async () => {
+  const calls = []
+  const ctx = ctxWithStream(failingStream(calls, { code: 'QUOTA', status: 402 }))
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1, probeOnDegraded: false }, { pool, now: () => 1_000 })
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
+  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } }, () => undefined)
+  assert.deepEqual(selections, [{ provider: 'glm-2', model: 'glm-4.7' }], 'disabled probing falls back to chain order')
+  assert.equal(calls.length, 0)
+
+  const ctx2 = fakeCtx() // no llm.stream at all
+  const pool2 = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx2, { ...config, cooldownMinutes: 1 }, { pool: pool2, now: () => 1_000 })
+  const selections2 = []
+  const agent2 = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections2.push(s) } }
+  await ctx2.waterfall('agent/request', { agent: agent2, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
+  await ctx2.waterfall('agent/request-error', { agent: agent2, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } }, () => undefined)
+  assert.deepEqual(selections2, [{ provider: 'glm-2', model: 'glm-4.7' }], 'no stream capability degrades to chain order')
+})
+
+test('probe reads the host chunk protocol: a terminal error finish is a failure, not health', async () => {
+  const stream = (options) => (async function* () {
+    if (options.provider === 'glm-2') {
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'QUOTA', status: 402, message: 'Insufficient Balance' } } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'p' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+  const ctx = ctxWithStream(stream)
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000 })
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-1', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  await ctx.waterfall('agent/request', { agent, turn: 1, step: 1 }, () => ({ provider: 'glm-1', model: 'glm-4.7' }))
+  await ctx.waterfall('agent/request-error', { agent, turn: 1, step: 1, provider: 'glm-1', failure: { code: 'QUOTA' } }, () => undefined)
+  assert.equal(pool.isCooling('glm-2'), true, 'the error finish must cool the probed account')
+  assert.deepEqual(selections, [{ provider: 'glm-3', model: 'glm-4.7' }])
+})

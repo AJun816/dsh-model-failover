@@ -33,6 +33,8 @@ import type {
 import { classifyFailure, providerExcluded, retryAfterFromMessage } from './classifier.js'
 import { createPool, firstHealthyEntry } from './pool.js'
 import { createCooldownStore } from './cooldowns.js'
+import { createProber } from './probe.js'
+import type { ProbeStream, Prober } from './probe.js'
 import { recordArmed, recordSwitch, writeLoadMarker } from './records.js'
 import { activeGroupOf, Config as ConfigBinding } from './config.js'
 import { VERSION } from './version.js'
@@ -84,6 +86,10 @@ const IN_FLIGHT_CAP = 64
 const BUDGET_CAP = 1_000
 /** Catalog-fallback hops per turn/step: a small budget of their own. */
 const FALLBACK_HOPS_PER_STEP = 2
+/** How long a successful probe keeps a provider verified (skip re-probing). */
+const PROBE_CACHE_MS = 5 * 60_000
+/** Total budget for walking the chain with probes; past it, trust chain order. */
+const VERIFY_BUDGET_MS = 6_000
 
 /**
  * The provider/model the agent loop actually fixed for this request: the
@@ -330,6 +336,68 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
         !inGroup.has(entry.provider) && !pool.isCooling(entry.provider) && !providerExcluded(excluded, entry.provider))
     }
 
+    // ---- Preflight verification -------------------------------------------
+    // Dead accounts used to be discovered one failed turn at a time. While the
+    // pool is degraded we instead verify candidates with a one-token probe and
+    // skip the dead ones, so a switch lands on an account that actually works.
+    const probeOnDegraded = boolOf(unwrapVolatile(config.probeOnDegraded), true)
+    const probeTimeoutMs = finiteOr(unwrapVolatile(config.probeTimeoutMs), 2500)
+    const prober: Prober = createProber(ctx.llm as ProbeStream | undefined, {
+      now, timeoutMs: probeTimeoutMs, cacheMs: PROBE_CACHE_MS,
+    })
+
+    /** True while any account is out of rotation or carries a provider reset. */
+    const degraded = (): boolean =>
+      Object.keys(pool.snapshot()).length > 0
+      || group.entries.some((entry) => pool.pendingReset(entry.provider) > now())
+
+    /** Take one provider out of rotation after a real (or probe) failure. */
+    const penalize = (provider: string, failure: LlmFailure | undefined): void => {
+      const message = String((failure as { message?: string } | null | undefined)?.message ?? '')
+      const stated = Math.max(finiteOr(failure?.providerRetryAfterMs, 0), retryAfterFromMessage(message, now()))
+      if (stated > 0) pool.markReset(provider, now() + stated)
+      noteFailure(provider)
+      pool.cool(provider, Math.max(cooldownMs, stated))
+      prober.forget(provider)
+    }
+
+    /**
+     * Walk the chain (preferred pick first) and return the first account that
+     * answers a cheap probe. Dead candidates are cooled on the way, so the
+     * decision is durable for the next step/turn. Returns the preferred/chain
+     * pick untouched when probing is off, unavailable, or the pool is healthy.
+     */
+    const chooseVerified = async (
+      failedProvider: string | undefined,
+      preferred: FailoverEntry | undefined,
+    ): Promise<FailoverEntry | undefined> => {
+      const base = preferred ?? firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
+      if (!probeOnDegraded || !prober.capable || !degraded()) return base
+      const deadline = now() + VERIFY_BUDGET_MS
+      const candidates: FailoverEntry[] = []
+      if (base !== undefined) candidates.push(base)
+      for (const entry of group.entries) candidates.push(entry)
+      const seen = new Set<string>()
+      for (const entry of candidates) {
+        if (seen.has(entry.provider)) continue
+        seen.add(entry.provider)
+        if (entry.provider === failedProvider) continue
+        if (pool.isCooling(entry.provider)) continue
+        if (pool.pendingReset(entry.provider) > now()) continue
+        if (prober.recentOk(entry.provider)) return entry
+        if (now() > deadline) return entry // budget spent: trust chain order
+        const result = await prober.probe(entry)
+        if (result.ok) return entry
+        const klass = classifyFailure(result.failure)
+        penalize(entry.provider, result.failure)
+        ctx.logger?.info?.(
+          'model-failover: preflight probe failed for %s/%s (%s) — skipping it',
+          entry.provider, entry.model, klass,
+        )
+      }
+      return undefined
+    }
+
     const offRequest = ctx.on('agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
       // Downstream (inner-listener) errors propagate unchanged: they are not
       // ours to swallow. Only OUR routing below degrades to pass-through.
@@ -378,11 +446,36 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
         if (model === undefined || typeof model.select !== 'function') return decision
         const current = payload.modelSelection ?? model.current()
         if (current === undefined) return decision
-        const coolingNow = pool.isCooling(current.provider)
         const inChain = group.entries.some((entry) => entry.provider === current.provider)
-        const nextUp = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
-        const changesRoute = nextUp !== undefined
+        // Preflight: while the pool is degraded, verify the current selection
+        // before entering the step. A dead account then costs one cheap probe
+        // instead of one user-visible failed turn.
+        if (inChain && probeOnDegraded && prober.capable && degraded()
+          && !pool.isCooling(current.provider) && pool.pendingReset(current.provider) === 0
+          && !prober.recentOk(current.provider)) {
+          const result = await prober.probe({ provider: current.provider, model: current.model })
+          if (!result.ok) {
+            penalize(current.provider, result.failure)
+            ctx.logger?.info?.(
+              'model-failover: preflight probe failed for %s/%s (%s) — steering away',
+              current.provider, current.model, classifyFailure(result.failure),
+            )
+          }
+        }
+        const coolingNow = pool.isCooling(current.provider)
+        let nextUp = firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
+        let changesRoute = nextUp !== undefined
           && !(nextUp.provider === current.provider && nextUp.model === current.model)
+        // The next hop may itself be dead (common after a restart): verify it
+        // too, so one probe round resolves the chain instead of one turn per
+        // account. chooseVerified cools every candidate that fails.
+        if (changesRoute && nextUp !== undefined && probeOnDegraded && prober.capable
+          && degraded() && !prober.recentOk(nextUp.provider)) {
+          const verified = await chooseVerified(current.provider, nextUp)
+          if (verified === undefined) return decision
+          nextUp = verified
+          changesRoute = !(nextUp.provider === current.provider && nextUp.model === current.model)
+        }
         // Steer when the current route is cooling OR when the provider itself
         // said it cannot serve again until a later time (persisted across
         // restarts) and a clean alternative exists. A marked account with no
@@ -506,14 +599,29 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
             && nextUp22.provider === failed.provider
             && (nextUp22.model === failed.model || failed.model === '')
           if (nextUp22 !== undefined && !repeatsFailure) {
-            model.select({ provider: nextUp22.provider, model: nextUp22.model })
-            note(payload, failed.provider, nextUp22.provider, klass + ' [' + failureDetail(failure) + ']', fallbackNext22 !== undefined ? 'fallback' : 'chain')
-            ctx.logger?.info?.(
-              'model-failover: %s failed (%s) — cooled, %s selected for the next step; this step fails fast',
-              failed.provider, klass, nextUp22.provider,
-            )
-            done()
-            return undefined
+            // While degraded, verify the pick with a cheap probe: one probe
+            // round now resolves the chain, instead of one failed turn per dead
+            // account later (the 14:28 incident tried them one by one).
+            const verified = probeOnDegraded && prober.capable && degraded()
+              ? await chooseVerified(failed.provider, nextUp22)
+              : nextUp22
+            const chosen = verified ?? firstHealthyEntry(group.entries, pool) ?? fallbackEntry()
+            if (chosen !== undefined) {
+              const probed = chosen.provider !== nextUp22.provider
+              model.select({ provider: chosen.provider, model: chosen.model })
+              note(
+                payload, failed.provider, chosen.provider,
+                klass + ' [' + failureDetail(failure) + ']' + (probed ? '/probe' : ''),
+                probed ? 'probe' : (fallbackNext22 !== undefined ? 'fallback' : 'chain'),
+              )
+              ctx.logger?.info?.(
+                'model-failover: %s failed (%s) — cooled, %s selected for the next step%s; this step fails fast',
+                failed.provider, klass, chosen.provider, probed ? ' (verified by probe)' : '',
+              )
+              done()
+              return undefined
+            }
+            // Every candidate failed the probe: fall through to the revive path.
           }
           // No healthy alternative on the fixed-route architecture. Delegating
           // to llm-retry would burn its whole budget re-firing the SAME dead
