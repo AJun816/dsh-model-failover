@@ -99,6 +99,14 @@ const SUPERVISION_START_DELAY_MS = 1_500
 const SUPERVISION_FAILURE_DELAY_MS = 500
 /** Debounce before verifying a freshly selected model (the user may still be picking). */
 const SELECTION_VERIFY_DELAY_MS = 250
+/** First idle self-test round: soon after startup, before the user's first message. */
+const BACKGROUND_PROBE_START_DELAY_MS = 20_000
+/** Jitter added to each idle round so hosts do not probe in lockstep. */
+const BACKGROUND_PROBE_JITTER_MS = 60_000
+/** Minimum spacing between idle rounds (never hammer the providers). */
+const BACKGROUND_PROBE_MIN_GAP_MS = 15_000
+/** Spacing between probes inside one round. */
+const BACKGROUND_PROBE_STAGGER_MS = 400
 
 /**
  * The provider/model the agent loop actually fixed for this request: the
@@ -547,6 +555,82 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     }
 
 
+
+    // ---- Idle self-test (background health check) -------------------------
+    // Industry practice (LiteLLM health_check_interval, dsh-key-managment's
+    // reachability probes, opencode-routing's zero-token usage probes): find a
+    // freshly expired account on a timer instead of on a user request. One
+    // 1-token probe per clean chain entry per round; failures cool + persist the
+    // provider reset; the next round is scheduled right after a known reset.
+    const backgroundProbeOn = boolOf(unwrapVolatile(config.backgroundProbe), true)
+    const backgroundProbeMs = Math.max(
+      BACKGROUND_PROBE_MIN_GAP_MS,
+      finiteOr(unwrapVolatile(config.backgroundProbeMinutes), 10) * 60_000,
+    )
+    let healthTimer: unknown
+
+    /** Earliest moment a cooled / reset account becomes usable again. */
+    const nextRecoveryDeadline = (): number => {
+      let earliest = Number.POSITIVE_INFINITY
+      for (const state of Object.values(pool.snapshot())) earliest = Math.min(earliest, state.coolingUntil)
+      for (const entry of group.entries) {
+        const reset = pool.pendingReset(entry.provider)
+        if (reset > 0) earliest = Math.min(earliest, reset)
+      }
+      return earliest
+    }
+
+    const runHealthCheck = async (): Promise<void> => {
+      if (supervisionDisposed || !probeOnDegraded || !prober.capable) return
+      const targets = group.entries.filter((entry) =>
+        !pool.isCooling(entry.provider)
+        && pool.pendingReset(entry.provider) === 0
+        && !prober.recentOk(entry.provider))
+      if (targets.length === 0) return
+      appendDiag('background/round', { targets: targets.map((entry) => entry.provider).join(',') })
+      for (const entry of targets) {
+        if (supervisionDisposed) return
+        if (pool.isCooling(entry.provider)) continue
+        const verdict = await prober.probe(entry)
+        if (verdict.ok) {
+          appendDiag('background/alive', { provider: entry.provider })
+        } else {
+          penalize(entry.provider, verdict.failure)
+          appendDiag('background/dead', {
+            provider: entry.provider,
+            code: String((verdict.failure as { code?: unknown } | undefined)?.code ?? ''),
+          })
+          ctx.logger?.info?.(
+            'model-failover: idle self-test found %s/%s unusable (%s) — cooled before the next request',
+            entry.provider, entry.model, classifyFailure(verdict.failure),
+          )
+          void supervise().catch(() => { /* advisory */ })
+        }
+        await sleep(BACKGROUND_PROBE_STAGGER_MS)
+      }
+    }
+
+    const scheduleHealthCheck = (delayMs: number): void => {
+      if (supervisionDisposed || !backgroundProbeOn || !probeOnDegraded || !prober.capable) return
+      if (healthTimer !== undefined) return
+      const handle = setTimeout(() => {
+        healthTimer = undefined
+        void runHealthCheck()
+          .catch(() => { /* advisory */ })
+          .finally(() => {
+            if (supervisionDisposed || !backgroundProbeOn) return
+            const deadline = nextRecoveryDeadline()
+            const at = now()
+            // Wake right after a known reset/cooldown, otherwise keep the cadence.
+            const delay = deadline > at && deadline - at < backgroundProbeMs
+              ? Math.max(BACKGROUND_PROBE_MIN_GAP_MS, deadline - at + 15_000)
+              : backgroundProbeMs + Math.floor(Math.random() * BACKGROUND_PROBE_JITTER_MS)
+            scheduleHealthCheck(delay)
+          })
+      }, Math.max(0, delayMs)) as { unref?: () => void }
+      handle.unref?.()
+      healthTimer = handle
+    }
 
     // A manual model pick is assembled into the step before any plugin hook can
     // change it, so verify the pick the moment it is recorded. A probe lands in
@@ -999,11 +1083,16 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     // First pass after wiring: a restarted host often still carries a stale
     // (capped) selection from the previous process — repair it before the user
     // sends anything.
-    if (probeOnDegraded) scheduleSupervision(internals.supervisionStartDelayMs ?? SUPERVISION_START_DELAY_MS)
+    if (probeOnDegraded) {
+      scheduleSupervision(internals.supervisionStartDelayMs ?? SUPERVISION_START_DELAY_MS)
+      // Idle self-test: prove the whole chain before the user's first message.
+      scheduleHealthCheck(internals.backgroundProbeStartDelayMs ?? BACKGROUND_PROBE_START_DELAY_MS)
+    }
 
     return () => {
       supervisionDisposed = true
       if (supervisionTimer !== undefined) { clearTimeout(supervisionTimer); supervisionTimer = undefined }
+      if (healthTimer !== undefined) { clearTimeout(healthTimer as Parameters<typeof clearTimeout>[0]); healthTimer = undefined }
       for (const timer of selectionTimers.values()) clearTimeout(timer)
       selectionTimers.clear()
       offSessionEvent()

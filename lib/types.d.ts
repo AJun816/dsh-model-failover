@@ -52,6 +52,10 @@ export interface Config {
     probeOnDegraded?: boolean;
     /** Per-probe timeout in ms (default 2500); a hung provider must not stall the step. */
     probeTimeoutMs?: number;
+    /** Idle-time self-test of chain entries so a newly expired account is found before a request fails (default true). */
+    backgroundProbe?: boolean;
+    /** Minutes between idle self-test rounds (default 10). */
+    backgroundProbeMinutes?: number;
     /** Recent switch records the GUI card surfaces as a notice (host-written, advisory). */
     lastSwitches?: SwitchRecord[];
 }
@@ -137,6 +141,8 @@ export interface ApplyInternals {
     logFile?: string;
     /** Override the first supervision delay (tests). */
     supervisionStartDelayMs?: number;
+    /** Override the first background self-test delay (tests). */
+    backgroundProbeStartDelayMs?: number;
 }
 /** Durable account-health state: cool downs plus provider-stated resets. */
 export interface CooldownState {

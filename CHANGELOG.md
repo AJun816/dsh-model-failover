@@ -9,6 +9,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.16.0] — 2026-11-16
+
+### Added — 空闲自检（backgroundProbe）：把"发现死号"从请求路径挪到空闲路径
+- 动机：即便有持久化 + 预检 + 巡检 + 请求内改道，"从未失败过、突然到期"的账号仍要靠一次真实失败才能学会。业内做法都是**后台主动探测**：LiteLLM 的 `health_check_interval`、dsh-key-managment 的"后台可达性探测"、dsh-opencode-routing 的零 token 用量探测、Letter2025 的"冷却后小请求探测"。
+- 实现：空闲自检循环，默认每 10 分钟一轮（±60s 抖动，轮内每账号错开 400ms）。只探"干净"条目（未冷却、无供应商恢复时间、5 分钟内未验证过）；1-token 探针失败 → 冷却 + 持久化恢复时间 + 巡检把在线会话搬走；成功 → 缓存 5 分钟。
+- **恢复定点**：下一轮自检优先排在"已知冷却/恢复时刻 + 15s"，而不是固定间隔——把"额度恢复"也变成主动验证（对应 Letter2025 的 recovery probe、opencode-routing 的 window reset 探测）。
+- 配置：`backgroundProbe`（默认 true）、`backgroundProbeMinutes`（默认 10）；`probeOnDegraded:false` 或宿主无 `llm.stream` 时自动关闭。成本：每账号每轮 1 token（4 账号 × 10 分钟 ≈ 每天 576 token）。
+- 诊断新增场景 H（无任何请求，自检发现并冷却刚过期账号）；测试 64/64。
+
 ## [0.15.0] — 2026-11-16
 
 ### Added — `llm/stream` 请求内改道：用户当前消息不再因死号失败

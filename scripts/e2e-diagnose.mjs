@@ -344,6 +344,47 @@ async function checkSelectionVerification() {
   return { failures, picked, off }
 }
 
+// ---- 场景 H：空闲自检（0.16.0）-----------------------------------------
+// 行业做法（LiteLLM health_check、key 管理插件的可达性探测、opencode-routing 的
+// 用量探测）：不等用户请求，空闲时定期给链上每个账号发 1-token 探针。
+// 期望：从未失败过、刚刚到期的账号在下一轮自检中被冷却，用户不必先吃一次失败。
+async function checkIdleSelfTest() {
+  const failures = []
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+  ] }], cooldownMinutes: 3, backgroundProbeMinutes: 10 }
+  const build = async (backgroundProbe) => {
+    const probed = []
+    const ctx = makeCtx()
+    ctx.llm.stream = (options) => {
+      probed.push(options.provider)
+      if (options.provider === 'zai-coding-cn-2') {
+        return (async function* () {
+          yield { type: 'finish', reason: { kind: 'error', failure: {
+            code: 'RATE_LIMIT', status: 429,
+            message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}',
+          } } }
+        })()
+      }
+      return (async function* () { yield { type: 'text-delta', index: 0, text: 'p' } })()
+    }
+    const pool = createPool({ cooldownMs: 3 * 60_000, now: () => Date.now() })
+    apply(ctx, { ...CHAIN, backgroundProbe }, {
+      pool, now: () => Date.now(), logFile,
+      supervisionStartDelayMs: 60_000, backgroundProbeStartDelayMs: 5,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    return { pool, probed }
+  }
+  const on = await build(true)
+  if (!on.pool.isCooling('zai-coding-cn-2')) failures.push('H1 空闲自检未冷却刚过期的账号')
+  if (!on.probed.includes('zai-coding-cn-2')) failures.push('H2 自检没有探到该账号')
+  const off = await build(false)
+  if (off.pool.isCooling('zai-coding-cn-2')) failures.push('H3 关闭自检时不应发生探测/冷却（对照）')
+  return { failures, on, off }
+}
+
 // ---- 场景 G：同一条消息内改道（0.15.0，llm/stream 层）-------------------
 // 研究结论：同类插件（dsh-opencode-routing / dsh-llm-fallbacks）都在
 // `llm/stream` 这一层做"同一请求内重试"，从而绕过宿主"每步固定路由"的限制。
@@ -391,6 +432,13 @@ console.log('\n=== 场景 C：重启后不重复踩已知死号 ===')
 for (const f of restartFailures) console.log('  ❌ ' + f)
 console.log(restartFailures.length === 0 ? '  ✅ 重置时间持久化，重启后预检直接落到可用账号' : `  ❌ ${restartFailures.length} 项断言失败`)
 
+const idleSelfTest = await checkIdleSelfTest()
+console.log('\n=== 场景 H：空闲自检（不等用户请求） ===')
+for (const f of idleSelfTest.failures) console.log('  ❌ ' + f)
+console.log(idleSelfTest.failures.length === 0
+  ? `  ✅ 自检探到 ${idleSelfTest.on.probed.join('、')}，刚过期的账号已被冷却（对照未探测）`
+  : `  ❌ ${idleSelfTest.failures.length} 项断言失败`)
+
 const streamReroute = await checkStreamReroute()
 console.log('\n=== 场景 G：同一条消息内改道（llm/stream） ===')
 for (const f of streamReroute.failures) console.log('  ❌ ' + f)
@@ -431,6 +479,7 @@ if (mode === '--expect-thrash') {
 } else {
   process.exitCode = bounded && handoffFailures.length === 0 && restartFailures.length === 0
     && probeChain.failures.length === 0 && supervision.failures.length === 0
-    && selectionPick.failures.length === 0 && streamReroute.failures.length === 0 ? 0 : 1
+    && selectionPick.failures.length === 0 && streamReroute.failures.length === 0
+    && idleSelfTest.failures.length === 0 ? 0 : 1
 }
 rmSync(process.env.DSH_HOME, { recursive: true, force: true })

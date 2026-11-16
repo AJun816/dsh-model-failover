@@ -1102,3 +1102,37 @@ test('llm/stream leaves a healthy route and out-of-chain routes untouched', asyn
   for await (const chunk of outside) seen2.push(chunk)
   assert.equal(seen2[0].text, 'out', 'a route outside the chain is the user choice')
 })
+
+test('idle self-test finds a newly expired account before any request', async () => {
+  const ctx = fakeCtx()
+  const probed = []
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: (options) => {
+    probed.push(options.provider)
+    if (options.provider === 'glm-2') {
+      return (async function* () {
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}' } } }
+      })()
+    }
+    return (async function* () { yield { type: 'text-delta', index: 0, text: 'p' } })()
+  } }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, {
+    pool, now: () => 1_000, supervisionStartDelayMs: 10_000, backgroundProbeStartDelayMs: 5,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 900))
+  assert.ok(probed.includes('glm-2'), 'the idle round must probe every clean entry')
+  assert.equal(pool.isCooling('glm-2'), true, 'an expired account is cooled before any user request')
+  assert.ok(pool.pendingReset('glm-2') > 0, 'the provider resume time is persisted')
+})
+
+test('idle self-test can be disabled', async () => {
+  const ctx = fakeCtx()
+  let probes = 0
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: () => { probes += 1; return (async function* () { yield { type: 'text-delta', index: 0, text: 'p' } })() } }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1, backgroundProbe: false }, {
+    pool, now: () => 1_000, supervisionStartDelayMs: 10_000, backgroundProbeStartDelayMs: 5,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  assert.equal(probes, 0, 'backgroundProbe:false must disable idle rounds')
+})
