@@ -1151,3 +1151,14 @@ test('a host that rejects optional event registration still arms the plugin', ()
   })
   assert.ok(armed?.pool, 'the core failover listeners must still be wired')
 })
+
+test('the config schema accepts a callable schema library (0.17.0 regression)', async () => {
+  const { buildSchema } = await import('../lib/config.js')
+  const node = Object.assign(() => node, {
+    object: () => node, array: () => node, string: () => node, number: () => node,
+    boolean: () => node, default: () => node, required: () => node, volatile: () => node,
+  })
+  assert.ok(buildSchema(node) !== undefined, 'a callable library (schemastery) must be accepted')
+  assert.equal(buildSchema({ object: () => node }), undefined, 'an incomplete API degrades to no schema')
+  assert.equal(buildSchema(null), undefined)
+})

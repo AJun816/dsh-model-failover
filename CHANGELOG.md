@@ -9,6 +9,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.17.1] — 2026-11-16
+
+### Fixed — 0.17.0 的配置 schema 判定错误导致设置命名空间消失（GUI 空白）
+- 事故（15:47）：卡片显示「命名空间未就绪（插件未启用？）/ namespace not served」，界面完全消失；插件本身仍 armed（load.log 正常）。
+- 根因：0.17.0 的动态 schema 校验只接受 `typeof library === 'object'`，而 schemastery 的默认导出是**可调用的**（`typeof z === 'function'`）→ `Config` 变成 `undefined` → 宿主不注册该插件的 settings 命名空间 → 卡片无内容。
+- 修复：接受函数与对象两种形态；仍保留结构性方法校验与 try/catch 降级。`lib/config.js` 现在导出有效的 StandardSchemaV1（实测 `~standard.validate` 存在）。
+- 防回归：新增单测（可调用库必须被接受、残缺 API 必须降级）；`check-health.mjs` 增加**功能性**检查——装有 schemastery 时必须能 `import lib/config.js` 且 `Config !== undefined`、具备 `~standard`（33 项守卫）。
+- 诊断：schema 缺失时写 `diag.log` 的 `config/schema-missing`，不再静默。
+
 ## [0.17.0] — 2026-11-16
 
 ### Changed — 工程健康度与依赖解耦（DSH 升级不炸）

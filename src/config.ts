@@ -11,6 +11,7 @@
  */
 
 import type { Config as ConfigType, FailoverGroup } from './types.js'
+import { appendDiag } from './diag.js'
 
 /** Minimal structural view of the schema builder this plugin uses. */
 interface SchemaApi {
@@ -24,9 +25,16 @@ interface SchemaApi {
   volatile(): SchemaApi
 }
 
-/** Build the runtime schema; any incompatibility degrades to "no schema". */
-function buildSchema(library: unknown): SchemaApi | undefined {
-  if (library === null || typeof library !== 'object') return undefined
+/**
+ * Build the runtime schema; any incompatibility degrades to "no schema".
+ * The schema library's default export is CALLABLE (typeof 'function'), so both
+ * functions and objects must be accepted — 0.17.0 accepted objects only and
+ * silently produced no schema, which removed the settings namespace from the
+ * GUI ("namespace not served", 2026-11-16 15:47 incident).
+ */
+export function buildSchema(library: unknown): SchemaApi | undefined {
+  const callable = typeof library === 'function'
+  if (!callable && (library === null || typeof library !== 'object')) return undefined
   const z = library as Partial<SchemaApi>
   if (typeof z.object !== 'function' || typeof z.array !== 'function'
     || typeof z.string !== 'function' || typeof z.number !== 'function'
@@ -81,6 +89,11 @@ try {
  * unavailable — cordis then skips validation and passes the config through.
  */
 export const Config: unknown = buildSchema(schemaLibrary)
+if (Config === undefined) {
+  // Loud on purpose: without a schema the host serves NO settings namespace and
+  // the GUI card renders an empty state. Keep the trace next to load.log.
+  appendDiag('config/schema-missing', { library: typeof schemaLibrary })
+}
 
 /**
  * The active group: the configured activeGroup id when it matches, else the

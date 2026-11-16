@@ -38,6 +38,23 @@ const configLib = read('lib/config.js')
 check('schema library imported dynamically (src)', !/^import\s+\w+\s+from\s+'@deepseek-ai\/schemastery'/m.test(configSrc))
 check('schema library imported dynamically (lib)', !/require\('@deepseek-ai\/schemastery'\)/.test(configLib) && /import\('@deepseek-ai\/schemastery'\)/.test(configLib))
 
+// 3b. Functional: with the schema library installed, Config must actually resolve
+//     (0.17.0 shipped a schema-library check that rejected the callable export and
+//     silently produced no Config -> the GUI lost its settings namespace).
+let schemaResolvable = false
+try { await import('@deepseek-ai/schemastery'); schemaResolvable = true } catch { /* optional */ }
+if (schemaResolvable) {
+  try {
+    const cfg = await import(new URL('../lib/config.js', import.meta.url))
+    check('Config schema resolves with the library installed', cfg.Config !== undefined)
+    check('Config schema is StandardSchemaV1', typeof cfg.Config?.['~standard']?.validate === 'function')
+  } catch (error) {
+    check('Config schema resolves with the library installed', false, String(error))
+  }
+} else {
+  console.log('ℹ️  schemastery not installed here — skipping the functional Config check')
+}
+
 // 4. No other static runtime import from the host packages in the server build.
 const serverFiles = ['lib/index.js', 'lib/config.js', 'lib/pool.js', 'lib/probe.js', 'lib/records.js', 'lib/cooldowns.js', 'lib/diag.js']
 for (const file of serverFiles) {
