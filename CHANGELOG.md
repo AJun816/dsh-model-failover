@@ -9,6 +9,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.13.1] — 2026-11-16
+
+### Fixed — 加载期异常 `cannot get property "agents" without inject`（插件完全未装载）
+- 事故（15:07:49，GUI 卡片显示「异常」）：巡检代码直接读取 `ctx.agents`，cordis 对未在 `inject` 声明的服务抛错 → wire() 抛错 → apply 失败 → 插件完全 inert，故障转移全程未生效。load.log 铁证：`wire failed: cannot get property "agents" without inject` / `apply failed: ...`。
+- 修复：不再触碰 `ctx.agents` 属性，只用显式 `ctx.get('agents')`（无需 inject，缺失返回 undefined）并包 try/catch；服务缺失时巡检自动跳过，插件其余功能照常。
+- 回归：新增 cordis 注入守卫测试（用 Proxy 模拟未声明服务访问即抛错），58/58；诊断 A–E 全绿。
+
 ## [0.13.0] — 2026-11-16
 
 ### Added — 启动/空闲巡检（后台换号，用户发消息前完成）

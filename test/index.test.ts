@@ -768,6 +768,22 @@ test('0.2.2 arch: pre-step steers away from a cooling selection and respects hea
   assert.equal(selections.length, 1)
 })
 
+test('the plugin never reads an undeclared service property (cordis inject guard)', () => {
+  const base = fakeCtx()
+  const guarded = new Proxy(base, {
+    get(target, prop, receiver) {
+      // The real cordis context throws exactly this for services not in inject.
+      if (prop === 'agents') throw new Error('cannot get property "agents" without inject')
+      return Reflect.get(target, prop, receiver)
+    },
+  })
+  let armed
+  assert.doesNotThrow(() => {
+    armed = apply(guarded, { ...config, cooldownMinutes: 1 }, { now: () => 1_000, supervisionStartDelayMs: 5 })
+  })
+  assert.ok(armed?.pool, 'the plugin must still arm without the agents service')
+})
+
 test('garbage payloads never throw into the waterfalls', async () => {
   const ctx = fakeCtx()
   apply(ctx, config)

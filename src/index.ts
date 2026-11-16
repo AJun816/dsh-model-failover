@@ -366,8 +366,17 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     // next turn assembles on a healthy account (2026-11-16 14:48: restart with
     // a dead selection cost one failed message; supervision prevents exactly
     // that).
-    const agentsService = ctx.agents
-      ?? (typeof ctx.get === 'function' ? ctx.get('agents') as ListenerContext['agents'] : undefined)
+    // Never read `ctx.agents` directly: cordis throws "cannot get property
+    // \"agents\" without inject" for undeclared services (0.13.0 loaded as an
+    // exception in the GUI because of exactly that). The explicit ctx.get()
+    // lookup needs no inject declaration and returns undefined when absent.
+    const agentsService = (() => {
+      try {
+        return typeof ctx.get === 'function'
+          ? ctx.get('agents') as ListenerContext['agents']
+          : undefined
+      } catch { return undefined }
+    })()
     let supervisionTimer: unknown
     let supervisionDisposed = false
     let supervising = false
