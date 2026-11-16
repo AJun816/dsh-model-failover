@@ -344,6 +344,43 @@ async function checkSelectionVerification() {
   return { failures, picked, off }
 }
 
+// ---- 场景 G：同一条消息内改道（0.15.0，llm/stream 层）-------------------
+// 研究结论：同类插件（dsh-opencode-routing / dsh-llm-fallbacks）都在
+// `llm/stream` 这一层做"同一请求内重试"，从而绕过宿主"每步固定路由"的限制。
+// 期望：当前选择是已到期账号时，这次请求在到达适配器前就被换到健康账号。
+async function checkStreamReroute() {
+  const failures = []
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+  ] }], cooldownMinutes: 3 }
+  const used = []
+  const ctx = makeCtx()
+  ctx.llm.stream = (options) => {
+    used.push(options.provider)
+    if (options.provider === 'zai-coding-cn-2') {
+      return (async function* () {
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429, message: '429 1310' } } }
+      })()
+    }
+    return (async function* () {
+      yield { type: 'text-delta', index: 0, text: 'ok' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })()
+  }
+  const pool = createPool({ cooldownMs: 3 * 60_000, now: () => Date.now() })
+  apply(ctx, CHAIN, { pool, now: () => Date.now(), logFile, supervisionStartDelayMs: 60_000 })
+  pool.markReset('zai-coding-cn-2', Date.parse('2026-11-17T16:11:05+08:00'))
+  const chunks = []
+  const stream = await dispatch(ctx, 'llm/stream', { provider: 'zai-coding-cn-2', model: 'glm-5.3', messages: [] }, () => (async function* () {
+    yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429 } } }
+  })())
+  for await (const chunk of stream) chunks.push(chunk)
+  if (used.includes('zai-coding-cn-2')) failures.push('G1 死号请求仍到达了适配器')
+  if (!chunks.some((chunk) => chunk.type === 'text-delta')) failures.push('G2 没有拿到健康账号的输出')
+  return { failures, used, chunks }
+}
+
 const handoffFailures = await checkQuotaExpiryHandoff()
 console.log('\n=== 场景 B：额度到期自动切换（ACCOUNT_QUOTA） ===')
 for (const f of handoffFailures) console.log('  ❌ ' + f)
@@ -353,6 +390,13 @@ const restartFailures = await checkRestartRecovery()
 console.log('\n=== 场景 C：重启后不重复踩已知死号 ===')
 for (const f of restartFailures) console.log('  ❌ ' + f)
 console.log(restartFailures.length === 0 ? '  ✅ 重置时间持久化，重启后预检直接落到可用账号' : `  ❌ ${restartFailures.length} 项断言失败`)
+
+const streamReroute = await checkStreamReroute()
+console.log('\n=== 场景 G：同一条消息内改道（llm/stream） ===')
+for (const f of streamReroute.failures) console.log('  ❌ ' + f)
+console.log(streamReroute.failures.length === 0
+  ? `  ✅ 死号请求未到达适配器，实际调用 ${streamReroute.used.join(' → ')}`
+  : `  ❌ ${streamReroute.failures.length} 项断言失败`)
 
 const selectionPick = await checkSelectionVerification()
 console.log('\n=== 场景 F：手动选模型即时校验 ===')
@@ -387,6 +431,6 @@ if (mode === '--expect-thrash') {
 } else {
   process.exitCode = bounded && handoffFailures.length === 0 && restartFailures.length === 0
     && probeChain.failures.length === 0 && supervision.failures.length === 0
-    && selectionPick.failures.length === 0 ? 0 : 1
+    && selectionPick.failures.length === 0 && streamReroute.failures.length === 0 ? 0 : 1
 }
 rmSync(process.env.DSH_HOME, { recursive: true, force: true })

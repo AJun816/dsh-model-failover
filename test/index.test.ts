@@ -1063,3 +1063,42 @@ test('selection verification works without the agents service (agent/created mem
   assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], 'agent/created alone must be enough to verify and move')
   assert.equal(pool.isCooling('glm-2'), true)
 })
+
+test('llm/stream reroutes a known-dead route inside the same call', async () => {
+  const ctx = fakeCtx()
+  const used = []
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: (options) => {
+    used.push(options.provider)
+    return (async function* () { yield { type: 'text-delta', index: 0, text: 'ok' }; yield { type: 'finish', reason: { kind: 'stop' } } })()
+  } }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 10_000 })
+  pool.cool('glm-1', 60_000)
+  const chunks = []
+  const stream = ctx.waterfall('llm/stream', { provider: 'glm-1', model: 'glm-4.7', messages: [] }, () => (async function* () {
+    yield { type: 'finish', reason: { kind: 'error', failure: { code: 'QUOTA' } } }
+  })())
+  for await (const chunk of await stream) chunks.push(chunk)
+  assert.deepEqual(used, ['glm-2'], 'the dead route must never reach the adapter')
+  assert.deepEqual(chunks.map((c) => c.type), ['text-delta', 'finish'])
+})
+
+test('llm/stream leaves a healthy route and out-of-chain routes untouched', async () => {
+  const ctx = fakeCtx()
+  const used = []
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: (options) => {
+    used.push(options.provider)
+    return (async function* () { yield { type: 'text-delta', index: 0, text: 'ok' } })()
+  } }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 10_000 })
+  const healthy = await ctx.waterfall('llm/stream', { provider: 'glm-2', model: 'glm-4.7', messages: [] }, () => (async function* () { yield { type: 'text-delta', index: 0, text: 'base' } })())
+  const seen = []
+  for await (const chunk of healthy) seen.push(chunk)
+  assert.equal(seen[0].text, 'base', 'a healthy route goes straight to the adapter')
+  assert.deepEqual(used, [])
+  const outside = await ctx.waterfall('llm/stream', { provider: 'other', model: 'x', messages: [] }, () => (async function* () { yield { type: 'text-delta', index: 0, text: 'out' } })())
+  const seen2 = []
+  for await (const chunk of outside) seen2.push(chunk)
+  assert.equal(seen2[0].text, 'out', 'a route outside the chain is the user choice')
+})

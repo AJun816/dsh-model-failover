@@ -9,6 +9,16 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.15.0] — 2026-11-16
+
+### Added — `llm/stream` 请求内改道：用户当前消息不再因死号失败
+- 生态调研：DSH 插件市场（Awesome DSH Plugin catalog，5643 条）中已有 7 个同类插件，分两派：
+  - **agent 瀑布派**（HB00/dsh-llm-failover、Letter2025/dsh-model-failover）：`agent/request` + `agent/request-error`，失败后冷却并在下一次请求切换——受宿主"每步装配固定路由"限制，当前消息仍会失败；
+  - **llm/stream 派**（2869949486/dsh-opencode-routing、omdsh-dev/dsh-llm-fallbacks）：在流式调用内部重试/改道，"A failure mid-step does not lose the step"，首个输出块前可换号，已输出的部分不重放。
+- 实现：监听公开的 `llm/stream` 瀑布。当本次调用的 provider 在池中已冷却/被供应商标记为未到期，且链上存在健康条目时，直接在到达适配器前把调用改道到健康条目（用 WeakSet 防止递归），并尽力对齐唯一匹配会话的选择；健康路由与链外路由完全不动。
+- 与既有能力的关系：0.11.8 持久化提供"已知死号"、0.12/0.13 预检与巡检负责提前发现、0.14 选中校验负责修选择；`llm/stream` 负责**同一条消息内**兜住仍然撞上的死号（双保险）。
+- 诊断脚本新增场景 G：死号请求未到达适配器，实际调用健康账号；测试 62/62。
+
 ## [0.14.1] — 2026-11-16
 
 ### Fixed — 选模型即时校验未执行：不再依赖 `ctx.get('agents')`，改为记住宿主广播的 agent
