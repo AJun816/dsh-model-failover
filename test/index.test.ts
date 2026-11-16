@@ -1,10 +1,23 @@
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
 
 // The plugin is ESM; load it through the registered schemastery-stub hook.
 const mod = await import('../lib/index.js')
-const { apply, classifyFailure, createPool, activeGroupOf } = mod
+const { apply: applyPlugin, classifyFailure, createPool, activeGroupOf } = mod
+
+/**
+ * Every test gets its own in-memory pool unless it injects one: apply() would
+ * otherwise hydrate the shared durable store (the test DSH_HOME), letting one
+ * test's cool downs leak into the next.
+ */
+const apply = (ctx, config, internals = {}) => {
+  if (internals.pool !== undefined) return applyPlugin(ctx, config, internals)
+  const now = internals.now ?? (() => Date.now())
+  return applyPlugin(ctx, config, { ...internals, pool: createPool({ cooldownMs: 30 * 60_000, now }) })
+}
 
 /** Minimal cordis-shaped context with waterfall semantics. */
 function fakeCtx() {
@@ -765,4 +778,98 @@ test('garbage payloads never throw into the waterfalls', async () => {
   // A downstream listener returning a non-object config passes through untouched.
   const r3 = await ctx.waterfall('agent/request', { agent: { id: 'x' }, turn: 1, step: 1 }, () => null)
   assert.equal(r3, null)
+})
+test('cooldown and provider-reset state survive a host restart (durable store)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mf-store-'))
+  try {
+    const now = () => 1_000_000
+    const pool = createPool({ cooldownMs: 60_000, now, store: mod.createCooldownStore({ directory: dir }) })
+    pool.cool('dead-1', 120_000)
+    pool.markReset('capped-1', 1_000_000 + 3_600_000)
+    // Host restart: a brand-new pool hydrates from the same directory.
+    const restarted = createPool({ cooldownMs: 60_000, now, store: mod.createCooldownStore({ directory: dir }) })
+    assert.equal(restarted.isCooling('dead-1'), true, 'a cooled account must stay cooled across restarts')
+    assert.equal(restarted.pendingReset('capped-1'), 1_000_000 + 3_600_000, 'provider reset time must survive restarts')
+    // Expired state is pruned on save/load, never resurrected.
+    const later = createPool({ cooldownMs: 60_000, now: () => 1_000_000 + 7_200_000, store: mod.createCooldownStore({ directory: dir }) })
+    assert.equal(later.isCooling('dead-1'), false)
+    assert.equal(later.pendingReset('capped-1'), 0)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a corrupt state file is ignored instead of breaking failover', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mf-store-bad-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'state.json'), '{not json')
+    const pool = createPool({ cooldownMs: 60_000, now: () => 1_000, store: mod.createCooldownStore({ directory: dir }) })
+    assert.equal(pool.isCooling('x'), false)
+    assert.equal(pool.pendingReset('x'), 0)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a fresh process seeds provider reset times from the switch log', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mf-seed-'))
+  try {
+    const resumeAt = new Date(2026, 10, 17, 16, 11, 5)
+    fs.writeFileSync(path.join(dir, 'switches.log'), JSON.stringify({
+      at: 1, from: 'zai-coding-cn-2', to: 'zai-coding-cn-3', via: 'chain',
+      reason: 'rate-limit [RATE_LIMIT 429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}]',
+    }) + '\n')
+    const now = new Date(2026, 10, 16, 14, 0, 0).getTime()
+    const pool = createPool({ cooldownMs: 60_000, now: () => now, store: mod.createCooldownStore({ directory: dir }) })
+    assert.equal(pool.pendingReset('zai-coding-cn-2'), resumeAt.getTime(), 'the log carries the provider resume time')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a provider-stated reset is deprioritized while a clean account exists, never dropped', () => {
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  const entries = [{ provider: 'a', model: 'm1' }, { provider: 'b', model: 'm2' }]
+  pool.markReset('a', 10_000)
+  assert.equal(mod.firstHealthyEntry(entries, pool)?.provider, 'b', 'a clean alternative wins')
+  pool.markReset('b', 10_000)
+  assert.equal(mod.firstHealthyEntry(entries, pool)?.provider, 'a', 'with no clean account the chain still returns one')
+})
+
+test('pre-step leaves a provider-marked selection for a clean alternative', async () => {
+  const ctx = fakeCtx()
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000 })
+  const selections = []
+  const agent = { id: 'a1', model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  pool.markReset('glm-2', 10_000)
+  await ctx.waterfall('agent/pre-step', { agent, turn: 1, step: 1, modelSelection: { provider: 'glm-2', model: 'glm-4.7' } }, () => ({ kind: 'enter' }))
+  assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], 'the capped selection must move to a clean account')
+  // Every account marked: nothing clean to move to, keep the user's route.
+  const ctx2 = fakeCtx()
+  const pool2 = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx2, { ...config, cooldownMinutes: 1 }, { pool: pool2, now: () => 1_000 })
+  for (const entry of config.groups[0].entries) pool2.markReset(entry.provider, 10_000)
+  const selections2 = []
+  const agent2 = { id: 'a1', model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections2.push(s) } }
+  await ctx2.waterfall('agent/pre-step', { agent: agent2, turn: 1, step: 1, modelSelection: { provider: 'glm-2', model: 'glm-4.7' } }, () => ({ kind: 'enter' }))
+  assert.deepEqual(selections2, [], 'all accounts marked: stay on the current route (quota-floor accounts keep serving)')
+})
+test('the newest provider statement wins over an older reset horizon', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mf-latest-'))
+  try {
+    const now = new Date(2026, 10, 16, 14, 40, 0).getTime()
+    fs.writeFileSync(path.join(dir, 'switches.log'), [
+      JSON.stringify({ at: 1, from: 'zai-coding-cn', to: 'x', reason: 'rate-limit [1310 … 2026-11-17 16:11:05 后可继续使用。]', via: 'chain' }),
+      JSON.stringify({ at: 2, from: 'zai-coding-cn', to: 'y', reason: 'rate-limit [1310 … 2026-11-16 14:32:13 后可继续使用。]', via: 'chain' }),
+    ].join('\n') + '\n')
+    const pool = createPool({ cooldownMs: 60_000, now: () => now, store: mod.createCooldownStore({ directory: dir }) })
+    assert.equal(pool.pendingReset('zai-coding-cn'), 0, 'the later statement (14:32, already past) supersedes the old week-long horizon')
+    // Live statements behave the same way: replace, do not take the maximum.
+    pool.markReset('b', now + 10 * 3_600_000)
+    pool.markReset('b', now + 3_600_000)
+    assert.equal(pool.pendingReset('b'), now + 3_600_000)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

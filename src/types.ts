@@ -98,6 +98,18 @@ export interface ApplyInternals {
   logFile?: string
 }
 
+/** Durable account-health state: cool downs plus provider-stated resets. */
+export interface CooldownState {
+  cooling: Record<string, number>
+  resets: Record<string, number>
+}
+
+/** Persistence face for {@link CooldownState}; both directions are best-effort. */
+export interface CooldownStore {
+  load(now: number): CooldownState
+  save(state: CooldownState, now: number): void
+}
+
 /** Cooled-account pool contract (see pool.ts). */
 export interface AccountPool {
   cool(account: string, ms?: number): void
@@ -106,5 +118,9 @@ export interface AccountPool {
   revive(account: string): boolean
   /** Remaining cooling ms (0 when healthy/expired). */
   remaining(account: string): number
+  /** Remember a provider-stated resume time ("… 后可继续使用"). */
+  markReset(account: string, until: number): void
+  /** Provider-stated resume time in ms (0 when none or already past). */
+  pendingReset(account: string): number
   snapshot(): Record<string, { coolingUntil: number }>
 }

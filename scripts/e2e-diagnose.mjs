@@ -23,7 +23,7 @@ import { join } from 'node:path'
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-failover-diagnose-'))
 const logFile = join(process.env.DSH_HOME, 'switches.log')
 
-const { apply } = await import('../lib/index.js')
+const { apply, createPool, createCooldownStore } = await import('../lib/index.js')
 
 // ---- 最小宿主桩 ----------------------------------------------------------
 function makeCtx() {
@@ -147,10 +147,68 @@ async function checkQuotaExpiryHandoff() {
   return failures
 }
 
+// ---- 场景 C：重启后不重复踩已知死号（2026-11-16 14:28 事故）-----------
+// 现场：14:27 重启 → 池被清空 → 14:28 撞 zai-1(14:32 恢复) → 切到 zai-2
+// （11-17 才恢复）→ 用户下一条消息仍失败。期望：重启后预置已知重置时间，
+// 预检直接离开已标记账号，落到可用账号（deepseek-account）。
+async function checkRestartRecovery() {
+  const failures = []
+  const dir = mkdtempSync(join(tmpdir(), 'mf-diag-state-'))
+  const CHAIN = { groups: [{ id: 'g', entries: [
+    { provider: 'zai-coding-cn', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-2', model: 'glm-5.3' },
+    { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
+    { provider: 'deepseek-account', model: 'deepseek-flash' },
+  ] }], cooldownMinutes: 3 }
+  const clock = { t: Date.parse('2026-11-16T14:28:00+08:00') }
+  const quota = (resume) => ({
+    code: 'RATE_LIMIT', status: 429,
+    message: '429: {"code":"1310","message":"已达到 7 天使用上限，' + resume + ' 后可继续使用。"}',
+  })
+  // 进程 A：三个 zai 账号先后撞 1310（周上限日期各不相同）
+  const ctxA = makeCtx()
+  const poolA = createPool({ cooldownMs: 3 * 60_000, now: () => clock.t, store: createCooldownStore({ directory: dir }) })
+  apply(ctxA, CHAIN, { pool: poolA, now: () => clock.t, logFile: join(dir, 'switches.log') })
+  const selection = { provider: 'zai-coding-cn', model: 'glm-5.3' }
+  const agentA = { id: 'restart-agent', session: { id: 'restart-session' }, model: {
+    select: (s) => { Object.assign(selection, s) }, current: () => selection,
+  } }
+  const failOnce = async (ctx, agent, resume) => {
+    await dispatch(ctx, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({ ...selection }))
+    await dispatch(ctx, 'agent/request-error', { agent, turn: 1, step: 1, provider: selection.provider, failure: quota(resume) }, async () => undefined)
+  }
+  await failOnce(ctxA, agentA, '2026-11-16 14:32:13')
+  await failOnce(ctxA, agentA, '2026-11-17 16:11:05')
+  await failOnce(ctxA, agentA, '2026-11-17 16:11:05')
+  if (selection.provider !== 'deepseek-account') {
+    failures.push('C0 进程 A 未走到可用账号：' + selection.provider)
+  }
+  // 进程 B（重启）：同一 state 目录，全新池；当前选择停在 zai-coding-cn-2
+  const ctxB = makeCtx()
+  const poolB = createPool({ cooldownMs: 3 * 60_000, now: () => clock.t, store: createCooldownStore({ directory: dir }) })
+  apply(ctxB, CHAIN, { pool: poolB, now: () => clock.t, logFile: join(dir, 'switches.log') })
+  if (poolB.pendingReset('zai-coding-cn-2') <= clock.t) failures.push('C1 重启后丢失 zai-coding-cn-2 的重置时间')
+  const selectionB = { provider: 'zai-coding-cn-2', model: 'glm-5.3' }
+  const agentB = { id: 'restart-agent', session: { id: 'restart-session' }, model: {
+    select: (s) => { Object.assign(selectionB, s) }, current: () => selectionB,
+  } }
+  await dispatch(ctxB, 'agent/pre-step', { agent: agentB, turn: 2, step: 1, modelSelection: selectionB }, async () => ({ kind: 'enter' }))
+  if (selectionB.provider !== 'deepseek-account') {
+    failures.push('C2 重启后的下一步仍停在已标记死号：' + selectionB.provider)
+  }
+  rmSync(dir, { recursive: true, force: true })
+  return failures
+}
+
 const handoffFailures = await checkQuotaExpiryHandoff()
 console.log('\n=== 场景 B：额度到期自动切换（ACCOUNT_QUOTA） ===')
 for (const f of handoffFailures) console.log('  ❌ ' + f)
 console.log(handoffFailures.length === 0 ? '  ✅ 真实失败账号被冷却，选择已交棒（B1/B2）' : `  ❌ ${handoffFailures.length} 项断言失败`)
+
+const restartFailures = await checkRestartRecovery()
+console.log('\n=== 场景 C：重启后不重复踩已知死号 ===')
+for (const f of restartFailures) console.log('  ❌ ' + f)
+console.log(restartFailures.length === 0 ? '  ✅ 重置时间持久化，重启后预检直接落到可用账号' : `  ❌ ${restartFailures.length} 项断言失败`)
 
 const mode = process.argv[2] ?? ''
 const bounded = secondChance.length <= 8

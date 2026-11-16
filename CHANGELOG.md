@@ -9,6 +9,18 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.11.8] — 2026-11-16
+
+### Fixed — 冷却/恢复时间持久化 + 已知死号预检跳过（重启后不再逐个撞死号）
+- 事故（14:28，用户实测）：14:27 重启后内存池被清空，14:28 撞 zai-1（14:32 恢复）→ 切到 zai-2（11-17 才恢复）→ 用户下一条消息继续失败。日志证明切换本身已经正确（0.11.7），缺的是"新进程不知道哪个号已经到期"。
+- 修复：
+  1. 冷却与供应商声明的恢复时间持久化到 `$DSH_HOME/model-failover/state.json`（原子写、按进程隔离临时文件、30 天上限、坏文件忽略），重启后自动恢复；
+  2. 首次运行从 `switches.log` 播种各账号最近一次声明的恢复时间（最新声明优先；最新声明时间已过 → 视为额度已恢复并清除旧值）；
+  3. `agent/pre-step` 增加预检跳过：当前选择被供应商标记为未到期、且链中存在"干净"替补时，下一步直接迁移，不再先烧一条失败消息；
+  4. 被标记账号永不从链中移除（额度地板账号仍可服务正常请求）；无干净替补时保持原位。
+- `scripts/e2e-diagnose.mjs` 新增场景 C（重启后不重复踩已知死号）并接入退出码；场景 B 保留。50/50 测试。
+- 真实 `switches.log` 干跑（14:35）：zai-1 的 14:32 恢复声明生效 → 不再标记；zai-2/zai-3 标记 11-17；下一条消息直接路由回 `zai-coding-cn/glm-5.3`。
+
 ## [0.11.7] — 2026-11-16
 
 ### Fixed — DSH 0.2.2 固定路由下失败账号归属错误（"额度到期后无法自动切换"事故）

@@ -1,2 +1,2 @@
 /** The version of this plugin build (single source: package.json). */
-export declare const VERSION = "0.11.7";
+export declare const VERSION = "0.11.8";
