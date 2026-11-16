@@ -9,6 +9,16 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.17.0] — 2026-11-16
+
+### Changed — 工程健康度与依赖解耦（DSH 升级不炸）
+- **schemastery 变为可选**：改为动态导入 + 结构性校验 + 失败降级；缺库或未来 major 变更时导出空 schema，cordis 跳过校验直接透传配置（配置读取本身已有完整默认值兜底）。
+- **监听器统一安全注册**：`agent/request`、`agent/request-error`、`agent/pre-step`、`llm/stream`、`session/event`、`agent/created`、`agent/disposed`、`llm/adapters-updated` 全部经 `safeOn()`；单个事件被改名/移除/注册抛错只关闭该通道，插件仍能装载。
+- **新增 `scripts/check-health.mjs`**（31 项机械守卫）：版本三处一致、动态依赖未被改回静态、服务端零静态宿主导入、无 `session.append` 直写、监听器单入口、无 `console.log`、产物齐全。
+- **新增 `pnpm health`**（build + test + 离线诊断 + 守卫）并接入 GitHub Actions CI。
+- **兼容性回归**：模拟宿主拒绝 `agent/created` / `agent/disposed` / `session/event` / `llm/stream` 注册，断言插件仍装载（65/65）。
+- README 增加"依赖边界"表：服务端只依赖可选的 schemastery；客户端卡片依赖宿主 UI primitives，但不影响服务端故障转移。
+
 ## [0.16.0] — 2026-11-16
 
 ### Added — 空闲自检（backgroundProbe）：把"发现死号"从请求路径挪到空闲路径

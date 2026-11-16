@@ -17,3 +17,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+      - name: End-to-end diagnostics (offline)
+        run: node scripts/e2e-diagnose.mjs
+      - name: Health / contract guards
+        run: node scripts/check-health.mjs

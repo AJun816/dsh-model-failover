@@ -1136,3 +1136,18 @@ test('idle self-test can be disabled', async () => {
   await new Promise((resolve) => setTimeout(resolve, 200))
   assert.equal(probes, 0, 'backgroundProbe:false must disable idle rounds')
 })
+
+test('a host that rejects optional event registration still arms the plugin', () => {
+  const ctx = fakeCtx()
+  const baseOn = ctx.on.bind(ctx)
+  const rejected = ['agent/created', 'agent/disposed', 'session/event', 'llm/stream']
+  ctx.on = (event, listener, options) => {
+    if (rejected.includes(event)) throw new Error('unsupported event: ' + event)
+    return baseOn(event, listener, options)
+  }
+  let armed
+  assert.doesNotThrow(() => {
+    armed = apply(ctx, { ...config, cooldownMinutes: 1 }, { now: () => 1_000, supervisionStartDelayMs: 5 })
+  })
+  assert.ok(armed?.pool, 'the core failover listeners must still be wired')
+})

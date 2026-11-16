@@ -44,6 +44,27 @@ import { boolOf, finiteOr, stringListOf, unwrapVolatile, valueOf } from './coerc
 export const name = 'model-failover'
 export const inject = ['llm']
 
+/**
+ * Register one listener without letting a host change break the whole plugin.
+ * A renamed/removed event, a throwing context, or an incompatible signature
+ * degrades to "this one channel is off" — never to a failed apply().
+ */
+function safeOn(
+  ctx: ListenerContext,
+  event: string,
+  listener: (...args: any[]) => unknown,
+  options?: { prepend?: boolean },
+): () => void {
+  try {
+    const off = ctx.on(event, listener as never, options)
+    return typeof off === 'function' ? off : () => { /* host returned no disposer */ }
+  } catch (error) {
+    ctx.logger?.warn?.('model-failover: cannot listen to "%s" (%o) — continuing without it', event, error)
+    appendDiag('wire/listener-skip', { event, message: String((error as Error)?.message ?? error) })
+    return () => { /* channel unavailable */ }
+  }
+}
+
 // External load proof: one line per process that evaluated this module.
 // If the host loads this plugin, ~/.dsh/model-failover/load.log shows it even
 // when apply() later fails or the host stdout is unreachable.
@@ -213,7 +234,7 @@ function startAutoDiscovery(ctx: ListenerContext, config: Config) {
     }
   }
   void refresh()
-  const off = ctx.on('llm/adapters-updated', (() => { void refresh() }) as never)
+  const off = safeOn(ctx, 'llm/adapters-updated', (() => { void refresh() }) as never)
   return { snapshot: () => entries, dispose: off }
 }
 
@@ -653,7 +674,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       handle.unref?.()
       selectionTimers.set(sessionId, handle)
     }
-    const offSessionEvent = ctx.on('session/event', ((session: { id?: unknown }, event: { type?: unknown }) => {
+    const offSessionEvent = safeOn(ctx, 'session/event', ((session: { id?: unknown }, event: { type?: unknown }) => {
       if (event?.type !== 'model/selection') return
       const id = session?.id
       if (id === undefined) return
@@ -662,12 +683,12 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     }) as never)
     // The registry announces every live agent (including restored sessions)
     // with the Agent object itself — no service lookup needed.
-    const offAgentCreated = ctx.on('agent/created', ((payload: { agent?: SupervisedAgent }) => {
+    const offAgentCreated = safeOn(ctx, 'agent/created', ((payload: { agent?: SupervisedAgent }) => {
       rememberAgent(payload?.agent)
       appendDiag('agent/created', { session: agentKeyOfAgent(payload?.agent) ?? '' })
       if (payload?.agent !== undefined) void verifyOneAgent(payload.agent).catch(() => { /* advisory */ })
     }) as never)
-    const offAgentDisposed = ctx.on('agent/disposed', ((payload: { agent?: SupervisedAgent }) => {
+    const offAgentDisposed = safeOn(ctx, 'agent/disposed', ((payload: { agent?: SupervisedAgent }) => {
       const key = agentKeyOfAgent(payload?.agent)
       if (key !== undefined) knownAgents.delete(key)
     }) as never)
@@ -727,7 +748,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       return undefined
     }
 
-    const offRequest = ctx.on('agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
+    const offRequest = safeOn(ctx, 'agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
       rememberAgent(payload?.agent)
       // Downstream (inner-listener) errors propagate unchanged: they are not
       // ours to swallow. Only OUR routing below degrades to pass-through.
@@ -769,7 +790,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     // selection, so chain steering happens here — select the first healthy
     // entry whenever the current selection sits on a cooling (exhausted)
     // account. Healthy in-chain manual choices are respected.
-    const offPreStep = ctx.on('agent/pre-step', async (payload: WaterfallPayload, next: () => Promise<unknown>) => {
+    const offPreStep = safeOn(ctx, 'agent/pre-step', async (payload: WaterfallPayload, next: () => Promise<unknown>) => {
       rememberAgent(payload?.agent)
       const decision = await next()
       try {
@@ -844,13 +865,13 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     }, { prepend: true })
 
     // The routing seam below the agent loop: every streaming call passes here.
-    const offStream = ctx.on('llm/stream', ((options: Record<string, unknown>, next: () => AsyncIterable<unknown>) =>
+    const offStream = safeOn(ctx, 'llm/stream', ((options: Record<string, unknown>, next: () => AsyncIterable<unknown>) =>
       rerouteStream(options, next)) as never)
 
     // Prepend so this listener always runs before same-waterfall recovery
     // policies (e.g. llm-retry): the account is cooled no matter who decides
     // the retry, and downstream backoff is preserved by always delegating.
-    const offRequestError = ctx.on('agent/request-error', async (payload: WaterfallPayload, next: () => Promise<RequestErrorAction | undefined>) => {
+    const offRequestError = safeOn(ctx, 'agent/request-error', async (payload: WaterfallPayload, next: () => Promise<RequestErrorAction | undefined>) => {
       let delegated = false // whether next() already ran — never run it twice
       try {
         rememberAgent(payload?.agent)

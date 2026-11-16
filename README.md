@@ -129,6 +129,17 @@ model-failover:
 
 ## 兼容性与升级策略
 
+### 依赖边界（DSH 升级不炸）
+
+| 层 | 依赖 | 缺失/变更时的行为 |
+|---|---|---|
+| 服务端插件 | 仅 `@deepseek-ai/schemastery`（可选、动态导入） | 加载失败 → 导出空 schema，cordis 跳过校验直接透传配置；所有配置读取本就有默认值与类型兜底 |
+| 服务端事件面 | `agent/request`、`agent/request-error`、`agent/pre-step`、`llm/stream`、`session/event`、`agent/created`、`agent/disposed` | 每个监听器经 `safeOn()` 注册：单个事件缺失/注册抛错只关闭该通道，插件仍装载 |
+| 可选服务/能力 | `ctx.get('agents')`、`ctx.llm.stream`、`appendPluginRecord` | 全部 try/catch + 能力探测；不可用时功能降级（巡检/探针/会话记录各自独立关闭） |
+| GUI 卡片（客户端） | 宿主注入的 `@deepseek-ai/dsh-client-ui-primitives` | 仅影响卡片渲染；服务端故障转移完全不受影响 |
+
+`pnpm health` 会机械校验：版本三处一致、动态依赖未回退为静态导入、服务端零静态宿主导入、无 `session.append` 直写、监听器单入口、无 `console.log`。
+
 - 只依赖 DSH **公开插件契约**：`agent/request` / `agent/request-error` 瀑布、`ctx.effect`、`ctx.logger`、`llm` 服务、`settings` / `credentials` 通用 RPC、`appendPluginRecord` 会话记录通道、插件管理器卡片插槽。
 - **防御式降级承诺**：所有监听器与记录通道全程 best-effort——任何异常（包括未来 DSH 升级导致某个通道变化）都会安静降级，等价于插件未安装，绝不阻塞任务、绝不可能写坏会话日志（会话记录只走自动标记 `ignorable` 的官方通道，且有防回退守卫测试）。
 - 切换日志默认写在插件安装目录下（随安装方式自动定位，不依赖机器路径）。
