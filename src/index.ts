@@ -35,6 +35,7 @@ import { createPool, firstHealthyEntry } from './pool.js'
 import { createCooldownStore } from './cooldowns.js'
 import { createProber } from './probe.js'
 import type { ProbeStream, Prober } from './probe.js'
+import { appendDiag } from './diag.js'
 import { recordArmed, recordSwitch, writeLoadMarker } from './records.js'
 import { activeGroupOf, Config as ConfigBinding } from './config.js'
 import { VERSION } from './version.js'
@@ -383,6 +384,41 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     let supervisionDisposed = false
     let supervising = false
 
+    // Agents the plugin has actually SEEN (agent/created plus every waterfall
+    // payload). This does not depend on the optional agents service being
+    // reachable through ctx.get(), so verification still works on hosts where
+    // the lookup is unavailable (2026-11-16 15:19: the service lookup silently
+    // returned undefined, so the selection-change check never ran).
+    const knownAgents = new Map<string, SupervisedAgent>()
+    const agentKeyOfAgent = (agent: SupervisedAgent | undefined): string | undefined => {
+      const raw = agent?.session?.id ?? agent?.id
+      return raw === undefined || raw === null ? undefined : String(raw)
+    }
+    const rememberAgent = (agent: SupervisedAgent | undefined): void => {
+      const key = agentKeyOfAgent(agent)
+      if (key === undefined || agent === undefined) return
+      if (knownAgents.size > 200) knownAgents.clear()
+      knownAgents.set(key, agent)
+    }
+    appendDiag('wire', {
+      version: VERSION,
+      group: group.id,
+      entries: group.entries.length,
+      agentService: agentsService !== undefined,
+      stream: typeof (ctx.llm as { stream?: unknown } | undefined)?.stream === 'function',
+    })
+    const liveAgents = (): SupervisedAgent[] => {
+      const seen = new Set<string>()
+      const out: SupervisedAgent[] = []
+      for (const agent of [...knownAgents.values(), ...(agentsService?.list?.() ?? [])]) {
+        const key = agentKeyOfAgent(agent)
+        if (key === undefined || seen.has(key)) continue
+        seen.add(key)
+        out.push(agent)
+      }
+      return out
+    }
+
     /** Take one provider out of rotation after a real (or probe) failure. */
     const penalize = (provider: string, failure: LlmFailure | undefined): void => {
       const message = String((failure as { message?: string } | null | undefined)?.message ?? '')
@@ -416,6 +452,11 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       const verified = await chooseVerified(current.provider, firstHealthyEntry(group.entries, pool) ?? fallbackEntry())
       if (verified === undefined) return
       if (verified.provider === current.provider && verified.model === current.model) return
+      appendDiag('verify/move', {
+        session: agentKeyOfAgent(agent) ?? '',
+        from: current.provider + '/' + current.model,
+        to: verified.provider + '/' + verified.model,
+      })
       model.select({ provider: verified.provider, model: verified.model })
       note(
         { agent } as WaterfallPayload, current.provider, verified.provider,
@@ -431,7 +472,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     const supervise = async (): Promise<void> => {
       if (supervising || supervisionDisposed) return
       if (!probeOnDegraded || !degraded()) return
-      const list = agentsService?.list?.() ?? []
+      const list = liveAgents()
       supervising = true
       try {
         for (const agent of list) {
@@ -446,22 +487,24 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       }
     }
 
-    /** Supervision is only possible when the host exposes the agents service. */
-    const supervisionAvailable = typeof agentsService?.list === 'function'
+
 
     // A manual model pick is assembled into the step before any plugin hook can
     // change it, so verify the pick the moment it is recorded. A probe lands in
     // ~250ms; users need seconds to type, so the next send is normally saved.
     const selectionTimers = new Map<string, unknown>()
     const scheduleSelectionVerification = (sessionId: string): void => {
-      if (supervisionDisposed || !supervisionAvailable || !probeOnDegraded) return
+      if (supervisionDisposed || !probeOnDegraded) return
       const existing = selectionTimers.get(sessionId)
       if (existing !== undefined) clearTimeout(existing)
       const handle = setTimeout(() => {
         selectionTimers.delete(sessionId)
-        const agent = (agentsService?.list?.() ?? []).find((candidate) =>
-          String(candidate.session?.id ?? candidate.id ?? '') === sessionId)
-        if (agent === undefined) return
+        const agent = knownAgents.get(sessionId)
+          ?? liveAgents().find((candidate) => String(candidate.session?.id ?? candidate.id ?? '') === sessionId)
+        if (agent === undefined) {
+          appendDiag('verify/skip', { session: sessionId, reason: 'agent not seen yet' })
+          return
+        }
         void verifyOneAgent(agent).catch(() => { /* verification is advisory */ })
       }, SELECTION_VERIFY_DELAY_MS) as { unref?: () => void }
       handle.unref?.()
@@ -470,12 +513,25 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     const offSessionEvent = ctx.on('session/event', ((session: { id?: unknown }, event: { type?: unknown }) => {
       if (event?.type !== 'model/selection') return
       const id = session?.id
-      if (id !== undefined) scheduleSelectionVerification(String(id))
+      if (id === undefined) return
+      appendDiag('model/selection', { session: String(id) })
+      scheduleSelectionVerification(String(id))
+    }) as never)
+    // The registry announces every live agent (including restored sessions)
+    // with the Agent object itself — no service lookup needed.
+    const offAgentCreated = ctx.on('agent/created', ((payload: { agent?: SupervisedAgent }) => {
+      rememberAgent(payload?.agent)
+      appendDiag('agent/created', { session: agentKeyOfAgent(payload?.agent) ?? '' })
+      if (payload?.agent !== undefined) void verifyOneAgent(payload.agent).catch(() => { /* advisory */ })
+    }) as never)
+    const offAgentDisposed = ctx.on('agent/disposed', ((payload: { agent?: SupervisedAgent }) => {
+      const key = agentKeyOfAgent(payload?.agent)
+      if (key !== undefined) knownAgents.delete(key)
     }) as never)
 
     /** Run supervision soon; keep a slow, non-blocking loop alive while degraded. */
     const scheduleSupervision = (delayMs: number, force = false): void => {
-      if (supervisionDisposed || !supervisionAvailable) return
+      if (supervisionDisposed) return
       if (supervisionTimer !== undefined) {
         if (!force) return
         clearTimeout(supervisionTimer)
@@ -529,6 +585,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     }
 
     const offRequest = ctx.on('agent/request', async (payload: WaterfallPayload, next: () => Promise<LlmCallConfig>) => {
+      rememberAgent(payload?.agent)
       // Downstream (inner-listener) errors propagate unchanged: they are not
       // ours to swallow. Only OUR routing below degrades to pass-through.
       const resolved = await next()
@@ -570,6 +627,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     // entry whenever the current selection sits on a cooling (exhausted)
     // account. Healthy in-chain manual choices are respected.
     const offPreStep = ctx.on('agent/pre-step', async (payload: WaterfallPayload, next: () => Promise<unknown>) => {
+      rememberAgent(payload?.agent)
       const decision = await next()
       try {
         const model = payload?.agent?.model
@@ -648,6 +706,7 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
     const offRequestError = ctx.on('agent/request-error', async (payload: WaterfallPayload, next: () => Promise<RequestErrorAction | undefined>) => {
       let delegated = false // whether next() already ran — never run it twice
       try {
+        rememberAgent(payload?.agent)
         const key = agentKeyOf(payload)
         const failure = payload?.failure
         const klass = classifyFailure(failure)
@@ -885,6 +944,8 @@ function runApply(ctx: ListenerContext, config: Config = {}, internals: ApplyInt
       for (const timer of selectionTimers.values()) clearTimeout(timer)
       selectionTimers.clear()
       offSessionEvent()
+      offAgentCreated()
+      offAgentDisposed()
       offRequest()
       offPreStep()
       offRequestError()

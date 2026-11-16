@@ -123,6 +123,7 @@ model-failover:
 | 切换日志 | 插件目录 `switches.log` | 每次切换一行 JSON（时间/来源/目标/原因/路径） |
 | 会话记录 | 会话日志 `plugin:model-failover/switch` | 官方 ignorable 通道，不参与模型上下文，任何版本 DSH 均可安全读取 |
 | 卡片横幅 | `lastSwitches`（settings 命名空间） | 最近 5 次切换 |
+| 诊断日志 | 插件目录 `diag.log` | 巡检/预检执行轨迹（wire 能力、agent/created、model/selection、verify/move） |
 
 ## 兼容性与升级策略
 

@@ -1043,3 +1043,23 @@ test('supervision stays completely quiet while the pool is healthy', async () =>
   assert.deepEqual(selections, [])
   assert.equal(probes, 0, 'no probes while healthy')
 })
+
+test('selection verification works without the agents service (agent/created memory)', async () => {
+  const ctx = fakeCtx() // deliberately no ctx.get: no service lookup available
+  ctx.llm = { listProviders: () => [], listModels: async () => [], stream: (options) => (async function* () {
+    if (options.provider === 'glm-2') {
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429, message: '429: {"code":"1310","message":"已达到 7 天使用上限，2026-11-17 16:11:05 后可继续使用。"}' } } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'p' }
+  })() }
+  const selections = []
+  const agent = { id: 'sess-2', session: { id: 'sess-2' }, model: { current: () => ({ provider: 'glm-2', model: 'glm-4.7' }), select: (s) => selections.push(s) } }
+  const pool = createPool({ cooldownMs: 60_000, now: () => 1_000 })
+  apply(ctx, { ...config, cooldownMinutes: 1 }, { pool, now: () => 1_000, supervisionStartDelayMs: 10_000 })
+  // The host announces the restored agent with the object itself.
+  for (const handler of ctx.listeners.get('agent/created') ?? []) handler({ agent })
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  assert.deepEqual(selections, [{ provider: 'glm-1', model: 'glm-4.7' }], 'agent/created alone must be enough to verify and move')
+  assert.equal(pool.isCooling('glm-2'), true)
+})

@@ -266,7 +266,7 @@ async function checkSupervision() {
     { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
     { provider: 'deepseek-account', model: 'deepseek-flash' },
   ] }], cooldownMinutes: 3 }
-  const build = async (probeOnDegraded) => {
+  const build = async (probeOnDegraded, announceAgent = true) => {
     const selection = { provider: 'zai-coding-cn-2', model: 'glm-5.3' }
     const agent = { id: 'live-session', session: { id: 'live-session' }, model: {
       select: (s) => { Object.assign(selection, s) }, current: () => selection,
@@ -282,9 +282,10 @@ async function checkSupervision() {
       }
       yield { type: 'text-delta', index: 0, text: 'p' }
     })()
-    ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
     const pool = createPool({ cooldownMs: 3 * 60_000, now: () => Date.now() })
     apply(ctx, { ...CHAIN, probeOnDegraded }, { pool, now: () => Date.now(), logFile, supervisionStartDelayMs: 5 })
+    // The host announces the restored agent itself (no service lookup needed).
+    if (announceAgent) for (const handler of ctx.listeners.get('agent/created') ?? []) handler({ agent })
     pool.markReset('zai-coding-cn-2', Date.parse('2026-11-17T16:11:05+08:00'))
     await new Promise((resolve) => setTimeout(resolve, 120))
     return selection
@@ -292,8 +293,9 @@ async function checkSupervision() {
   const supervised = await build(true)
   if (supervised.provider === 'zai-coding-cn-2') failures.push('E1 启动巡检后仍停留在已到期账号')
   if (!CHAIN.groups[0].entries.some((e) => e.provider === supervised.provider)) failures.push('E2 巡检结果不在替补链内：' + supervised.provider)
-  const blind = await build(false)
-  if (blind.provider !== 'zai-coding-cn-2') failures.push('E3 关闭预检/巡检时应保持原选择（对照）')
+  // 对照：同一配置、同一死号，但宿主没有广播 agent 事件 → 插件没有可验证对象，保持原选择
+  const blind = await build(true, false)
+  if (blind.provider !== 'zai-coding-cn-2') failures.push('E3 未收到 agent 事件时应保持原选择（对照）')
   return { failures, supervised, blind }
 }
 
@@ -309,7 +311,7 @@ async function checkSelectionVerification() {
     { provider: 'zai-coding-cn-3', model: 'glm-5.3' },
     { provider: 'deepseek-account', model: 'deepseek-flash' },
   ] }], cooldownMinutes: 3 }
-  const build = async (probeOnDegraded) => {
+  const build = async (probeOnDegraded, announceAgent = true) => {
     const selection = { provider: 'zai-coding-cn-2', model: 'glm-5.3' }
     const agent = { id: 'pick-session', session: { id: 'pick-session' }, model: {
       select: (s) => { Object.assign(selection, s) }, current: () => selection,
@@ -325,9 +327,9 @@ async function checkSelectionVerification() {
       }
       yield { type: 'text-delta', index: 0, text: 'p' }
     })()
-    ctx.get = (name) => name === 'agents' ? { list: () => [agent] } : undefined
     const pool = createPool({ cooldownMs: 3 * 60_000, now: () => Date.now() })
     apply(ctx, { ...CHAIN, probeOnDegraded }, { pool, now: () => Date.now(), logFile, supervisionStartDelayMs: 60_000 })
+    if (announceAgent) for (const handler of ctx.listeners.get('agent/created') ?? []) handler({ agent })
     // 用户选中 zai-2 → 宿主记录 model/selection 事件
     for (const handler of ctx.listeners.get('session/event') ?? []) handler({ id: 'pick-session' }, { type: 'model/selection' })
     await new Promise((resolve) => setTimeout(resolve, 450))
@@ -336,8 +338,9 @@ async function checkSelectionVerification() {
   const picked = await build(true)
   if (picked.selection.provider === 'zai-coding-cn-2') failures.push('F1 选中死号后未被即时换走')
   if (!picked.pool.isCooling('zai-coding-cn-2')) failures.push('F2 死号未被冷却')
-  const off = await build(false)
-  if (off.selection.provider !== 'zai-coding-cn-2') failures.push('F3 关闭预检时应保持用户选择（对照）')
+  // 对照：同一选择、同一死号，但插件不知道任何 agent → 保持用户选择
+  const off = await build(true, false)
+  if (off.selection.provider !== 'zai-coding-cn-2') failures.push('F3 未收到 agent 事件时应保持用户选择（对照）')
   return { failures, picked, off }
 }
 

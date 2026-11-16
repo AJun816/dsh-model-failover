@@ -9,6 +9,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - 修复：所有配置读取统一经 `unwrapVolatile`（描述符调 `get()` 取真值，普通值直通），覆盖 groups/activeGroup/cooldownMinutes/retryOn/autoDiscover/fallbackToCatalog/catalogExclude。
 - 回归测试：volatile 包装配置 → armed ACTIVE + 路由正常。
 
+## [0.14.1] — 2026-11-16
+
+### Fixed — 选模型即时校验未执行：不再依赖 `ctx.get('agents')`，改为记住宿主广播的 agent
+- 事故（15:19，用户实测）：0.14.0 已装载并 armed，但"选中即校验"没有执行。会话在 15:18:59 恢复为 zai-coding-cn-2（11-17 到期）；用户 15:19:04 选中 zai-coding-cn/glm-4.6v 并发送，而回合已在 15:19:02 装配成 zai-2 → 1310 失败。
+- 根因：校验路径通过 `ctx.get('agents')` 查找活动会话；该查找在真实宿主上返回 undefined（不抛错），于是启动巡检与选中校验都静默跳过。
+- 修复：从 `agent/created` 事件以及 `agent/pre-step` / `agent/request` / `agent/request-error` 载荷中记住 Agent 对象（按 session id，上限 200，`agent/disposed` 移除）；校验时直接命中，`ctx.get('agents')` 仅作补充来源。
+- 新增 `diag.log`（`$DSH_HOME/model-failover/diag.log`）：记录 wire 能力探测、agent/created、model/selection、verify/skip、verify/move，可事后确认执行到哪一步。
+- 诊断场景 E/F 改走 agent/created 通道，并加入"未收到 agent 事件"对照组；测试 60/60。
+
 ## [0.14.0] — 2026-11-16
 
 ### Added — 手动选模型即时校验（补上"选完就发"的窗口）
